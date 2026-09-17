@@ -67,7 +67,6 @@ BUTTONS = [
     ("Hmm?", "rarely used"),
 ]
 LINKED = {"Play": "FPB1A2B3C4D5", "Outside": "FPB2B3C4D5E6", "Food": "FPB3C4D5E6F7"}
-SERIAL = "FPB000000001"
 
 
 async def run(
@@ -163,9 +162,10 @@ async def run(
         session.add(bedtime)
         ctx = {c.text: c.id for c in await session.scalars(select(Context))}
 
+        base_serial = f"FPB{hh:09d}"  # unique per household, so several accounts can be seeded
         base = BaseStation(
             household_id=hh,
-            serial_number=SERIAL,
+            serial_number=base_serial,
             name="Kitchen",
             default_pusher_id=rex.id,
             fw_version="2.1.0",
@@ -266,7 +266,7 @@ async def run(
         )
         if not real:
             await provision_user(session, USERS["dan"])
-        return {"household_id": hh, "interactions": count, "base": SERIAL}
+        return {"household_id": hh, "interactions": count, "base": base_serial}
 
 
 if __name__ == "__main__":
@@ -275,12 +275,12 @@ if __name__ == "__main__":
     )
     ap.add_argument("--days", type=int, default=14, help="days of history (default 14)")
     ap.add_argument("--per-day", type=int, help="average interactions per day (default 2-5)")
-    ap.add_argument(
-        "--email", help="rebuild this existing user's household instead of the demo one"
-    )
+    ap.add_argument("--email", help="rebuild this user's household instead of the demo one")
+    ap.add_argument("--uid", help="same, by Firebase uid; with --email it creates the user if new")
+    ap.add_argument("--name", help="display name when --uid creates the user")
     a = ap.parse_args()
-    info = asyncio.run(run(a.days, a.per_day, a.email))
+    info = asyncio.run(run(a.days, a.per_day, a.email, a.uid, a.name))
     print(f"seeded household {info['household_id']}: {info['interactions']} interactions")
-    if not a.email:
+    if not (a.email or a.uid):
         print("sign in with  Authorization: Bearer ann | bob | dan   (DEV_TOKENS in .env)")
-    print("device calls: X-Device-Key, serial", SERIAL)
+    print("device calls: X-Device-Key, base serial", info["base"])

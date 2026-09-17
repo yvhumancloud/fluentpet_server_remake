@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 from scripts import seed
@@ -16,7 +19,7 @@ async def test_seed_is_rerunnable_and_visible_through_the_api(client, as_user):
     assert {b["text"] for b in buttons} >= {"Play", "Outside", "Food", "Love you ❤️", "inaudible"}
     assert next(b for b in buttons if b["text"] == "Play")["base_button"]["button_serial_number"]
     base = (await client.get("/api/v1/bases")).json()[0]
-    assert base["serial_number"] == seed.SERIAL and len(base["buttons"]) == 3
+    assert base["serial_number"] == second["base"] and len(base["buttons"]) == 3
     feed = (await client.post("/api/v1/interactions/search", json={})).json()
     assert feed["total"] > 30 and {x["type"] for x in feed["items"]} == {"interaction", "note"}
     assert feed["counts"]["modeling"] > 0 and feed["counts"]["unassigned"] > 0
@@ -55,3 +58,12 @@ async def test_seed_by_uid_provisions_a_user_who_has_not_signed_in_yet(client, a
     assert {p["name"] for p in me["pushers"]} == {"Tester", "Bob", "Rex", "Tom"}
     again = await seed.run(days=3, uid=uid)  # exists now: no email needed, rebuilds in place
     assert (await client.get("/api/v1/me")).json()["household"]["id"] == again["household_id"]
+
+
+def test_seed_cli_exposes_every_option():
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.seed", "-h"], capture_output=True, text=True
+    )
+    assert out.returncode == 0 and all(
+        f"--{o}" in out.stdout for o in ("days", "per-day", "email", "uid", "name")
+    )

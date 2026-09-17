@@ -30,7 +30,7 @@ cd /opt/fluentpet && sudo docker compose exec api python -m scripts.seed --uid <
 It wipes and rebuilds that one household (same uid, they stay admin); re-run any time with just `--uid`.
 
 `DEV_TOKENS` in `.env` makes `Bearer ann|bob|dan` stand in for Firebase (refused when `ENV=prod`).
-Ann is the admin of a household with Bob, learners Rex and Tom, 12 buttons, a base `FPB000000001`
+Ann is the admin of a household with Bob, learners Rex and Tom, 12 buttons, a base (serial printed at the end)
 with three linked buttons, `--days` of interactions and notes; Dan has an empty household.
 Device calls use `X-Device-Key` from `.env`.
 Tests re-run migrations from scratch each session; override the DB with `TEST_DATABASE_URL`.
