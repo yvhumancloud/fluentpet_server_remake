@@ -1,0 +1,42 @@
+{
+  "ServiceName": "fluentpet-api",
+  "SourceConfiguration": {
+    "AutoDeploymentsEnabled": true,
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "arn:aws:iam::ACCOUNT_ID:role/fluentpet-apprunner-ecr"
+    },
+    "ImageRepository": {
+      "ImageRepositoryType": "ECR",
+      "ImageIdentifier": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/fluentpet/api:latest",
+      "ImageConfiguration": {
+        "Port": "8080",
+        "RuntimeEnvironmentVariables": { "ENV": "prod" },
+        "RuntimeEnvironmentSecrets": {
+          "DATABASE_URL": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/DATABASE_URL",
+          "FIREBASE_CREDENTIALS_JSON": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/FIREBASE_CREDENTIALS_JSON",
+          "R2_ACCOUNT_ID": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/R2_ACCOUNT_ID",
+          "R2_ACCESS_KEY_ID": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/R2_ACCESS_KEY_ID",
+          "R2_SECRET_ACCESS_KEY": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/R2_SECRET_ACCESS_KEY",
+          "R2_BUCKET": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/R2_BUCKET",
+          "DEVICE_API_KEY": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/DEVICE_API_KEY",
+          "JOB_API_KEY": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/JOB_API_KEY",
+          "SENTRY_DSN": "arn:aws:ssm:REGION:ACCOUNT_ID:parameter/fluentpet/prod/SENTRY_DSN"
+        }
+      }
+    }
+  },
+  "InstanceConfiguration": {
+    "Cpu": "0.25 vCPU",
+    "Memory": "0.5 GB",
+    "InstanceRoleArn": "arn:aws:iam::ACCOUNT_ID:role/fluentpet-apprunner-instance"
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/healthz",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 3
+  },
+  "AutoScalingConfigurationArn": "AUTOSCALING_ARN"
+}

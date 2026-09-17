@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env: { POSTGRES_USER: fluentpet, POSTGRES_PASSWORD: fluentpet, POSTGRES_DB: fluentpet_test }
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with: { version: "0.12.15" }
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv export --no-dev -o /tmp/req.txt && uvx pip-audit --disable-pip -r /tmp/req.txt
+      - run: uv run pytest -q
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: astral-sh/setup-uv@v7
+        with: { version: "0.12.15" }
+      - name: migrate (against Neon, before the new image goes live)
+        run: uv sync --frozen --no-dev && uv run alembic upgrade head
+        env: { DATABASE_URL: "${{ secrets.DATABASE_URL }}" }
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - name: build and push (App Runner auto-deploys :latest)
+        env: { REPO: "${{ steps.ecr.outputs.registry }}/fluentpet/api" }
+        run: |
+          docker build -t "$REPO:${{ github.sha }}" -t "$REPO:latest" .
+          docker push --all-tags "$REPO"
