@@ -4,11 +4,13 @@ Local (dev tokens):   PYTHONPATH=. uv run python scripts/seed.py [--days 14] [--
     wipes and recreates the demo households; sign in with `Authorization: Bearer ann` (admin),
     `bob` (member) or `dan` (separate, empty household) — needs DEV_TOKENS in .env.
 
-Prod (a real account): sign in once from the app, then on the EC2 box
+Prod (a real account), on the EC2 box:
     cd /opt/fluentpet && sudo docker compose exec api \
-        python -m scripts.seed --email you@gmail.com --days 180 --per-day 10
-    wipes that user's household and rebuilds it with the same content (you stay admin; Firebase
-    uid is kept, so the app keeps working). Nothing else in the database is touched.
+        python -m scripts.seed --uid <firebase uid> --email you@gmail.com --name You \
+        --days 180 --per-day 10
+    creates the user if they never signed in (their first sign-in then lands in the seeded
+    household), otherwise wipes and rebuilds their household (same uid, they stay admin). Later
+    re-runs need only --uid or --email. Nothing else in the database is touched.
 
 Uses the same services as the API so every rule (word normalisation, modeling, counters) holds.
 """
@@ -68,20 +70,38 @@ LINKED = {"Play": "FPB1A2B3C4D5", "Outside": "FPB2B3C4D5E6", "Food": "FPB3C4D5E6
 SERIAL = "FPB000000001"
 
 
-async def run(days: int = 14, per_day: int | None = None, email: str | None = None) -> dict:
-    """Seed `days` of history. `email`: rebuild that existing user's household instead of ann's."""
+async def run(
+    days: int = 14,
+    per_day: int | None = None,
+    email: str | None = None,
+    uid: str | None = None,
+    name: str | None = None,
+) -> dict:
+    """Seed `days` of history into ann's demo household, or into a real user's (`email` or `uid`).
+
+    An unknown `uid` is created on the spot when `email` is given too (their first sign-in then
+    lands in the seeded household); an unknown `email` alone is an error.
+    """
     rng = random.Random(7)
     now = datetime.now(UTC)
     async with SessionLocal() as session, session.begin():
         admin, tz = USERS["ann"], "Europe/Paris"
-        if email:
-            u = await session.scalar(select(User).where(User.email == email.lower()))
-            if u is None:
-                raise SystemExit(f"{email}: no such user — sign in from the app once first")
-            admin, tz = {"uid": u.firebase_uid, "email": u.email, "name": u.full_name}, u.timezone
+        if email or uid:
+            who = User.firebase_uid == uid if uid else User.email == email.lower()
+            u = await session.scalar(select(User).where(who))
+            if u is not None:
+                admin = {"uid": u.firebase_uid, "email": u.email, "name": u.full_name}
+                tz = u.timezone
+            elif uid and email:
+                admin = {"uid": uid, "email": email, "name": name}
+            else:
+                raise SystemExit(
+                    f"{uid or email}: unknown user — sign in once, or pass --uid AND --email"
+                )
         # start over: users go first (households restrict while they have members), then the
         # households cascade to everything they own
-        uids = [admin["uid"], USERS["bob"]["uid"]] + ([] if email else [USERS["dan"]["uid"]])
+        real = bool(email or uid)
+        uids = [admin["uid"], USERS["bob"]["uid"]] + ([] if real else [USERS["dan"]["uid"]])
         old = list(
             await session.scalars(select(User.household_id).where(User.firebase_uid.in_(uids)))
         )
@@ -244,7 +264,7 @@ async def run(days: int = 14, per_day: int | None = None, email: str | None = No
                 Preference(user_id=bob.id, key="push_frequency", value="on_interaction"),
             ]
         )
-        if not email:
+        if not real:
             await provision_user(session, USERS["dan"])
         return {"household_id": hh, "interactions": count, "base": SERIAL}
 

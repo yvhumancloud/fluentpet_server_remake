@@ -42,3 +42,16 @@ async def test_seed_scales_and_can_target_a_real_user(client, as_user):
     )  # app-origin interactions use the whole vocabulary, not just linked buttons
     with pytest.raises(SystemExit):
         await seed.run(email="nobody@example.com")
+
+
+async def test_seed_by_uid_provisions_a_user_who_has_not_signed_in_yet(client, as_user):
+    uid = "tgsoCPXFrAMKcIwEoWOk1cfN4jR2"
+    with pytest.raises(SystemExit):  # unknown uid, no email to create them with
+        await seed.run(days=3, uid=uid)
+    info = await seed.run(days=3, uid=uid, email="tester@example.com", name="Tester")
+    as_user(uid, "tester@example.com", name="Tester")  # first real sign-in finds the seeded user
+    me = (await client.get("/api/v1/me")).json()
+    assert me["household"]["id"] == info["household_id"] and me["email"] == "tester@example.com"
+    assert {p["name"] for p in me["pushers"]} == {"Tester", "Bob", "Rex", "Tom"}
+    again = await seed.run(days=3, uid=uid)  # exists now: no email needed, rebuilds in place
+    assert (await client.get("/api/v1/me")).json()["household"]["id"] == again["household_id"]

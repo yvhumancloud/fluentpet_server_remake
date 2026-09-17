@@ -20,14 +20,14 @@ PYTHONPATH=. uv run python scripts/seed.py --days 180 --per-day 10  # ~1,800 int
 curl -H "Authorization: Bearer ann" localhost:8080/api/v1/me
 ```
 
-Prod has no dev tokens: sign in from the app once, then fill *your* household from the EC2 box
+Prod has no dev tokens: seed a real Firebase user (created if they never signed in) from the EC2 box
 (same region as Neon, secrets already in the container):
 
 ```sh
-cd /opt/fluentpet && sudo docker compose exec api python -m scripts.seed --email you@gmail.com --days 180 --per-day 10
+cd /opt/fluentpet && sudo docker compose exec api python -m scripts.seed --uid <firebase-uid> --email you@gmail.com --name You --days 180 --per-day 10
 ```
 
-It wipes and rebuilds that one household (you stay admin, Firebase uid unchanged); re-run any time.
+It wipes and rebuilds that one household (same uid, they stay admin); re-run any time with just `--uid`.
 
 `DEV_TOKENS` in `.env` makes `Bearer ann|bob|dan` stand in for Firebase (refused when `ENV=prod`).
 Ann is the admin of a household with Bob, learners Rex and Tom, 12 buttons, a base `FPB000000001`
