@@ -1,8 +1,10 @@
 # FluentPet API — handoff
 
-Status on 2026-09-17: milestones 1–5 of the PRD are built and tested (97 endpoint tests,
-`uv run pytest`). Milestone 6: code and CI are ready for AWS; the accounts/console work is
-in `docs/AWS_SETUP.md` and still to be done. Nothing is committed to git yet.
+Status on 2026-09-17: milestones 1–6 of the PRD are built, tested (97 endpoint tests,
+`uv run pytest`) and **live in prod**: `https://47-130-5-81.sslip.io` (one EC2 `t3.micro` in
+`ap-southeast-1`, Neon, R2, Firebase; `docs/AWS_SETUP.md` is what was actually done). Every push to
+`main` migrates Neon and redeploys the box; `scripts/smoke.sh <url> .env.prod` is the acceptance
+check (9/9 on the first deploy). The URL changes if the instance is stopped/started (no Elastic IP yet).
 
 Spec: `PRD.md` in the old Rails repo (`fluentpet_server/PRD.md`). Where this document and the
 PRD disagree, the tests win — they are the behaviour that actually ships.
@@ -154,16 +156,18 @@ ever matters, add a trigram index on `interactions.note` / `notes.text`.
   query the PRD imagined; it is well under budget, so it stayed simple.
 * `base_offline` runs only when someone calls `/internal/base-offline` (`docs/AWS_SETUP.md` §7,
   triggered from the user's laptop by choice — no EventBridge); nothing calls it otherwise.
-* No rate limiting on the device key; it is a long shared secret, rotate it via Secret Manager.
+* No rate limiting on the device key; it is a long shared secret, rotate it in SSM Parameter Store and redeploy.
 * `X-Login-As` trusts the Firebase `admin` custom claim; set it with the Admin SDK only.
 
-## Milestone 6 checklist (accounts, not done)
+## What's left after milestone 6
 
-Follow `docs/AWS_SETUP.md` top to bottom: region → Neon → R2 → Firebase → AWS (ECR, OIDC deploy
-role, SSM secrets, EC2 role + instance) → GitHub variables →
-push to `main` → smoke test. Then:
+Hosting is done (`docs/AWS_SETUP.md`). Remaining, none of it code unless noted:
 
 * Play Store account-deletion URL (PRD open question 4): a static page; `DELETE /me` already
   does the work.
 * Re-run `scripts/loadtest.py` against Neon.
 * Decide Google-only vs email/password sign-in (PRD open question 1) — Firebase console only.
+* Elastic IP + a real domain before real users (sslip.io shares a Let's Encrypt rate limit;
+  `HOST=` in `deploy/ec2.sh`).
+* App e2e: real Firebase sign-in → `GET /me`; device script with the prod `X-Device-Key`.
+* Sentry DSN into `/fluentpet/prod/SENTRY_DSN` if wanted (code already wired, blank = off).
