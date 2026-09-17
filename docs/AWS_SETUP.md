@@ -140,7 +140,8 @@ name `fluentpet-ec2` → Create. Open it → Add permissions → Create inline p
 ```json
 { "Version": "2012-10-17", "Statement": [
   { "Effect": "Allow", "Action": ["ssm:GetParametersByPath","ssm:GetParameters","ssm:GetParameter"],
-    "Resource": "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/*" },
+    "Resource": ["arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod",
+                 "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/*"] },
   { "Effect": "Allow", "Action": "kms:Decrypt", "Resource": "*",
     "Condition": { "StringEquals": { "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com" } } }
 ]}
