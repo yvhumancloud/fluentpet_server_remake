@@ -1,12 +1,19 @@
-"""Demo data for e2e testing against the compose API.
+"""Demo data: a household with pushers, buttons, a base and months of activity.
 
-    PYTHONPATH=. uv run python scripts/seed.py     # wipes and recreates the demo households
+Local (dev tokens):   PYTHONPATH=. uv run python scripts/seed.py [--days 14] [--per-day 4]
+    wipes and recreates the demo households; sign in with `Authorization: Bearer ann` (admin),
+    `bob` (member) or `dan` (separate, empty household) — needs DEV_TOKENS in .env.
 
-Sign in with `Authorization: Bearer ann` (household admin), `bob` (member) or `dan` (a separate,
-empty household) — needs DEV_TOKENS in .env, see .env.example. Uses the same services as the
-API so every rule (word normalisation, modeling, counters) holds for the seeded rows.
+Prod (a real account): sign in once from the app, then on the EC2 box
+    cd /opt/fluentpet && sudo docker compose exec api \
+        python -m scripts.seed --email you@gmail.com --days 180 --per-day 10
+    wipes that user's household and rebuilds it with the same content (you stay admin; Firebase
+    uid is kept, so the app keeps working). Nothing else in the database is touched.
+
+Uses the same services as the API so every rule (word normalisation, modeling, counters) holds.
 """
 
+import argparse
 import asyncio
 import os
 import random
@@ -61,13 +68,20 @@ LINKED = {"Play": "FPB1A2B3C4D5", "Outside": "FPB2B3C4D5E6", "Food": "FPB3C4D5E6
 SERIAL = "FPB000000001"
 
 
-async def run() -> dict:
+async def run(days: int = 14, per_day: int | None = None, email: str | None = None) -> dict:
+    """Seed `days` of history. `email`: rebuild that existing user's household instead of ann's."""
     rng = random.Random(7)
     now = datetime.now(UTC)
     async with SessionLocal() as session, session.begin():
+        admin, tz = USERS["ann"], "Europe/Paris"
+        if email:
+            u = await session.scalar(select(User).where(User.email == email.lower()))
+            if u is None:
+                raise SystemExit(f"{email}: no such user — sign in from the app once first")
+            admin, tz = {"uid": u.firebase_uid, "email": u.email, "name": u.full_name}, u.timezone
         # start over: users go first (households restrict while they have members), then the
         # households cascade to everything they own
-        uids = [u["uid"] for u in USERS.values()]
+        uids = [admin["uid"], USERS["bob"]["uid"]] + ([] if email else [USERS["dan"]["uid"]])
         old = list(
             await session.scalars(select(User.household_id).where(User.firebase_uid.in_(uids)))
         )
@@ -78,8 +92,8 @@ async def run() -> dict:
             )
         )
 
-        ann = await provision_user(session, USERS["ann"])
-        ann.timezone = "Europe/Paris"
+        ann = await provision_user(session, admin)
+        ann.timezone = tz
         hh = ann.household_id
         b = USERS["bob"]
         bob = User(firebase_uid=b["uid"], email=b["email"], full_name=b["name"], household_id=hh)
@@ -120,7 +134,7 @@ async def run() -> dict:
                 normalized_word=n,
                 note=note,
                 is_hidden=text_ == "Hmm?",
-                introduced_at=date.today() - timedelta(days=rng.randrange(10, 200)),
+                introduced_at=date.today() - timedelta(days=rng.randrange(10, days + 60)),
             )
             session.add(b)
             buttons[t] = b
@@ -156,27 +170,30 @@ async def run() -> dict:
                 )
             )
 
-        human = {
-            p.name: p.id
-            for p in await session.scalars(select(Pusher).where(Pusher.household_id == hh))
-        }
+        me = await session.scalar(  # the admin's own human pusher (created at provisioning)
+            select(Pusher.id).where(Pusher.household_id == hh, Pusher.is_human).order_by(Pusher.id)
+        )
+        vocabulary = [t for t, _ in BUTTONS if t != "Hmm?"]
         learner_ctx = ("Asking Question", "Request Action/Object", "Inform", "Bedtime")
+        lo, hi = (2, 6) if per_day is None else (max(1, per_day // 2), per_day + per_day // 2 + 1)
         count = 0
-        for day in range(14, -1, -1):
-            for _ in range(rng.randrange(2, 6)):
+        for day in range(days, -1, -1):
+            for _ in range(rng.randrange(lo, hi)):
                 at = now - timedelta(
                     days=day, hours=rng.randrange(6, 22), minutes=rng.randrange(60)
                 )
-                words = rng.sample(list(LINKED), rng.choice([1, 1, 2, 2, 3]))
-                from_base = rng.random() < 0.6
+                from_base = rng.random() < 0.6  # a base can only report its linked buttons
+                words = rng.sample(
+                    list(LINKED) if from_base else vocabulary, rng.choice([1, 1, 2, 2, 3])
+                )
                 who = rng.choice(
-                    [rex.id, rex.id, rex.id, tom.id, human["Ann"], None if from_base else rex.id]
+                    [rex.id, rex.id, rex.id, tom.id, me, None if from_base else rex.id]
                 )
                 i = Interaction(
                     household_id=hh,
                     pusher_id=who,
                     occurred_at=at,
-                    device_timezone="Europe/Paris",
+                    device_timezone=tz,
                     origin="base" if from_base else "app",
                     is_favourite=rng.random() < 0.1,
                     note=rng.choice([None, None, None, "Wanted dinner early", "Very insistent"]),
@@ -207,20 +224,17 @@ async def run() -> dict:
             select(Interaction).where(Interaction.household_id == hh).limit(1)
         )
         hidden.is_hidden = True
+        notes = ("Vet says all good", "New button introduced", "Skipped training", "Great session")
         session.add_all(
             Note(
                 household_id=hh,
-                text=t,
+                text=notes[d % len(notes)],
                 occurred_at=now - timedelta(days=d, hours=3),
-                device_timezone="Europe/Paris",
+                device_timezone=tz,
                 created_by_user_id=ann.id,
                 is_favourite=d == 2,
             )
-            for d, t in (
-                (1, "Vet says all good"),
-                (2, "New button Walk introduced"),
-                (6, "Skipped training"),
-            )
+            for d in (1, 2, 6, *range(10, days, 5))
         )
         session.add_all(
             [
@@ -230,12 +244,23 @@ async def run() -> dict:
                 Preference(user_id=bob.id, key="push_frequency", value="on_interaction"),
             ]
         )
-        await provision_user(session, USERS["dan"])
+        if not email:
+            await provision_user(session, USERS["dan"])
         return {"household_id": hh, "interactions": count, "base": SERIAL}
 
 
 if __name__ == "__main__":
-    info = asyncio.run(run())
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("--days", type=int, default=14, help="days of history (default 14)")
+    ap.add_argument("--per-day", type=int, help="average interactions per day (default 2-5)")
+    ap.add_argument(
+        "--email", help="rebuild this existing user's household instead of the demo one"
+    )
+    a = ap.parse_args()
+    info = asyncio.run(run(a.days, a.per_day, a.email))
     print(f"seeded household {info['household_id']}: {info['interactions']} interactions")
-    print("sign in with  Authorization: Bearer ann | bob | dan   (DEV_TOKENS in .env)")
-    print("device calls: X-Device-Key from .env, serial", SERIAL)
+    if not a.email:
+        print("sign in with  Authorization: Bearer ann | bob | dan   (DEV_TOKENS in .env)")
+    print("device calls: X-Device-Key, serial", SERIAL)

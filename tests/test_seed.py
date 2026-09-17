@@ -1,3 +1,5 @@
+import pytest
+
 from scripts import seed
 
 
@@ -22,3 +24,21 @@ async def test_seed_is_rerunnable_and_visible_through_the_api(client, as_user):
     assert [i["email"] for i in hh["invitations"]] == ["carol@example.com"]
     as_user("dev-dan", "dan@example.com", name="Dan")
     assert (await client.post("/api/v1/interactions/search", json={})).json()["total"] == 0
+
+
+async def test_seed_scales_and_can_target_a_real_user(client, as_user):
+    as_user("real-uid", "real@example.com", name="Real")
+    assert (await client.get("/api/v1/me")).status_code == 200  # first sign-in provisions
+    info = await seed.run(days=30, per_day=6, email="real@example.com")
+    assert info["interactions"] > 120
+    me = (await client.get("/api/v1/me")).json()
+    assert me["household"]["id"] == info["household_id"] and me["is_household_admin"]
+    assert {p["name"] for p in me["pushers"]} == {"Real", "Bob", "Rex", "Tom"}
+    feed = (await client.post("/api/v1/interactions/search", json={})).json()
+    assert feed["total"] > 120
+    words = {b["text"] for x in feed["items"] if x["type"] == "interaction" for b in x["presses"]}
+    assert (
+        len(words) > 3
+    )  # app-origin interactions use the whole vocabulary, not just linked buttons
+    with pytest.raises(SystemExit):
+        await seed.run(email="nobody@example.com")

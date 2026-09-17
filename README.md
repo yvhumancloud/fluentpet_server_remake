@@ -15,13 +15,23 @@ uv sync && uv run pytest         # tests hit the compose Postgres (fluentpet_tes
 ### Demo data for e2e
 
 ```sh
-PYTHONPATH=. uv run python scripts/seed.py     # wipes + recreates the demo households
+PYTHONPATH=. uv run python scripts/seed.py                      # wipes + recreates the demo households
+PYTHONPATH=. uv run python scripts/seed.py --days 180 --per-day 10  # ~1,800 interactions, 5 s
 curl -H "Authorization: Bearer ann" localhost:8080/api/v1/me
 ```
 
+Prod has no dev tokens: sign in from the app once, then fill *your* household from the EC2 box
+(same region as Neon, secrets already in the container):
+
+```sh
+cd /opt/fluentpet && sudo docker compose exec api python -m scripts.seed --email you@gmail.com --days 180 --per-day 10
+```
+
+It wipes and rebuilds that one household (you stay admin, Firebase uid unchanged); re-run any time.
+
 `DEV_TOKENS` in `.env` makes `Bearer ann|bob|dan` stand in for Firebase (refused when `ENV=prod`).
 Ann is the admin of a household with Bob, learners Rex and Tom, 12 buttons, a base `FPB000000001`
-with three linked buttons, two weeks of interactions and notes; Dan has an empty household.
+with three linked buttons, `--days` of interactions and notes; Dan has an empty household.
 Device calls use `X-Device-Key` from `.env`.
 Tests re-run migrations from scratch each session; override the DB with `TEST_DATABASE_URL`.
 
