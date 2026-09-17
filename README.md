@@ -27,10 +27,10 @@ Tests re-run migrations from scratch each session; override the DB with `TEST_DA
 
 ## Deploy
 
-AWS App Runner + Neon + Cloudflare R2 + Firebase. One-time setup: `docs/AWS_SETUP.md`.
-After that, CI (`.github/workflows/ci.yml`) tests every PR and, on `main`, runs `alembic upgrade
-head` against Neon and pushes the image to ECR; App Runner auto-deploys `:latest`. Repo variables
-`AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`; secret `DATABASE_URL`.
+One EC2 box (`docker compose`: API + Caddy for HTTPS, see `deploy/ec2.sh`) + Neon + Cloudflare R2
++ Firebase. One-time setup: `docs/AWS_SETUP.md`. After that, CI (`.github/workflows/ci.yml`) tests
+every PR and, on `main`, runs `alembic upgrade head` against Neon, pushes the image to ECR and runs
+`deploy/ec2.sh` on the box via SSM. Repo variables `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`; secret `DATABASE_URL`.
 
 The base-offline check is not scheduled anywhere; run it from your laptop:
 `curl -X POST -H "X-Job-Key: $JOB_API_KEY" https://<url>/api/v1/internal/base-offline`

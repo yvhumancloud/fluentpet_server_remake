@@ -11,7 +11,8 @@ PRD disagree, the tests win — they are the behaviour that actually ships.
 
 A FastAPI 0.141 / Python 3.14 backend for the FluentPet remake app. Postgres 18 via SQLAlchemy
 2 async + Alembic, Firebase Auth for users, FCM for push, Cloudflare R2 (S3 API via boto3) for
-audio and avatars, one AWS App Runner service (hosting moved from GCP to AWS to use credits;
+audio and avatars, one EC2 box running docker compose (hosting moved from GCP to AWS to use credits;
+App Runner was the plan but is unavailable on new-free-plan AWS accounts;
 migrations run from CI, the base-offline check is an endpoint the user hits from a laptop).
 No queue, no Redis, no AWS IoT — a device script you write talks to `/api/v1/device/*`.
 
@@ -159,7 +160,7 @@ ever matters, add a trigram index on `interactions.note` / `notes.text`.
 ## Milestone 6 checklist (accounts, not done)
 
 Follow `docs/AWS_SETUP.md` top to bottom: region → Neon → R2 → Firebase → AWS (ECR, OIDC deploy
-role, SSM secrets, App Runner roles + service) → GitHub variables →
+role, SSM secrets, EC2 role + instance) → GitHub variables →
 push to `main` → smoke test. Then:
 
 * Play Store account-deletion URL (PRD open question 4): a static page; `DELETE /me` already

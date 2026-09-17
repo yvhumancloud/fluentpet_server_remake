@@ -40,8 +40,20 @@ jobs:
         env: { DATABASE_URL: "${{ secrets.DATABASE_URL }}" }
       - uses: aws-actions/amazon-ecr-login@v2
         id: ecr
-      - name: build and push (App Runner auto-deploys :latest)
+      - name: build and push
         env: { REPO: "${{ steps.ecr.outputs.registry }}/fluentpet/api" }
         run: |
           docker build -t "$REPO:${{ github.sha }}" -t "$REPO:latest" .
           docker push --all-tags "$REPO"
+      - name: deploy (run deploy/ec2.sh on the box tagged Name=fluentpet-api, via SSM)
+        run: |
+          CMD=$(aws ssm send-command --document-name AWS-RunShellScript --comment "${{ github.sha }}" \
+            --targets Key=tag:Name,Values=fluentpet-api --timeout-seconds 600 \
+            --parameters commands="curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/deploy/ec2.sh | bash" \
+            --query Command.CommandId --output text)
+          for _ in $(seq 60); do
+            S=$(aws ssm list-command-invocations --command-id "$CMD" --query 'CommandInvocations[0].Status' --output text)
+            case "$S" in Success|Failed|Cancelled|TimedOut) break;; esac; sleep 5
+          done
+          aws ssm list-command-invocations --command-id "$CMD" --details --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text
+          echo "status: $S"; [ "$S" = Success ]

@@ -1,26 +1,30 @@
-# Production setup: AWS App Runner + Neon + Cloudflare R2 + Firebase (console walkthrough)
+# Production setup: one EC2 box + Neon + Cloudflare R2 + Firebase (console walkthrough)
 
 One environment (`prod`), region **`ap-southeast-1` (Singapore)** everywhere. Local development
 stays on `docker compose`. After this one-time setup, every push to `main` migrates the database
 and deploys.
 
-Names the code expects (`.github/workflows/ci.yml`, `deploy/apprunner.json`) — keep them:
+Why EC2: this account is on AWS's new free plan, where App Runner is not available (needs the
+irreversible "advanced features" activation). One `t3.micro` running `docker compose` (the API +
+Caddy for HTTPS) does the job; `deploy/ec2.sh` is the whole server config.
+
+Names the code expects (`.github/workflows/ci.yml`, `deploy/ec2.sh`) — keep them:
 
 | Thing | Name |
 |---|---|
 | ECR repository | `fluentpet/api` |
-| App Runner service | `fluentpet-api` |
+| EC2 instance tag | `Name` = `fluentpet-api` (CI deploys to whatever carries this tag) |
 | SSM parameters | `/fluentpet/prod/<VAR>` |
-| IAM roles | `fluentpet-github-deploy`, `fluentpet-apprunner-ecr`, `fluentpet-apprunner-instance` |
+| IAM roles | `fluentpet-github-deploy`, `fluentpet-ec2` |
 | GitHub variables / secret | `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN` / `DATABASE_URL` |
 | GitHub repo | `yvhumancloud/fluentpet_server_remake` |
 
-Order matters: App Runner needs an image in ECR, and the image comes from CI, so GitHub is
-wired up (step 5) *before* the App Runner service is created (step 6).
+Order matters: the box pulls its image from ECR, and the image comes from CI, so GitHub is
+wired up (step 5) *before* the instance is launched (step 6).
 
 Keep a scratch note open; you will collect these values along the way:
 `ACCOUNT_ID`, Neon URL, R2 account id / key id / secret, Firebase JSON, `DEVICE_API_KEY`,
-`JOB_API_KEY`, App Runner URL.
+`JOB_API_KEY`, the instance's public IP.
 
 ---
 
@@ -125,31 +129,17 @@ Type **SecureString**, KMS key `alias/aws/ssm` (default):
 | `/fluentpet/prod/JOB_API_KEY` | random: `openssl rand -hex 32` — you send it from your laptop to run the base-offline check (step 7) |
 | `/fluentpet/prod/SENTRY_DSN` | a single space for now (SSM refuses empty values); the app treats blank as off |
 
-### 4d. App Runner roles
+### 4d. EC2 instance role
 
-**ECR access role** — IAM → Roles → Create role → **Custom trust policy**, paste:
-
-```json
-{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
-  "Principal": { "Service": "build.apprunner.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }
-```
-
-→ Next → search and tick **`AWSAppRunnerServicePolicyForECRAccess`** → Next →
-name `fluentpet-apprunner-ecr` → Create.
-
-**Instance role** (lets the running service read the secrets) — Create role → Custom trust policy:
-
-```json
-{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
-  "Principal": { "Service": "tasks.apprunner.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }
-```
-
-→ Next → no managed policies → name `fluentpet-apprunner-instance` → Create. Open it →
-Add permissions → Create inline policy → JSON (replace `ACCOUNT_ID`):
+IAM → Roles → Create role → **AWS service** → use case **EC2** → Next → tick
+**`AmazonSSMManagedInstanceCore`** (lets CI run the deploy script on the box, and gives you a
+browser shell without SSH) and **`AmazonEC2ContainerRegistryReadOnly`** (pull the image) → Next →
+name `fluentpet-ec2` → Create. Open it → Add permissions → Create inline policy → JSON
+(replace `ACCOUNT_ID`):
 
 ```json
 { "Version": "2012-10-17", "Statement": [
-  { "Effect": "Allow", "Action": ["ssm:GetParameters","ssm:GetParameter"],
+  { "Effect": "Allow", "Action": ["ssm:GetParametersByPath","ssm:GetParameters","ssm:GetParameter"],
     "Resource": "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/*" },
   { "Effect": "Allow", "Action": "kms:Decrypt", "Resource": "*",
     "Condition": { "StringEquals": { "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com" } } }
@@ -157,6 +147,22 @@ Add permissions → Create inline policy → JSON (replace `ACCOUNT_ID`):
 ```
 
 → name `read-secrets` → Create.
+
+### 4e. Let CI reach the box
+
+IAM → Roles → `fluentpet-github-deploy` → Add permissions → Create inline policy → JSON
+(replace `ACCOUNT_ID`):
+
+```json
+{ "Version": "2012-10-17", "Statement": [
+  { "Effect": "Allow", "Action": "ssm:SendCommand",
+    "Resource": ["arn:aws:ssm:ap-southeast-1::document/AWS-RunShellScript",
+                 "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"] },
+  { "Effect": "Allow", "Action": "ssm:ListCommandInvocations", "Resource": "*" }
+]}
+```
+
+→ name `ssm-deploy` → Create.
 
 ## 5. GitHub → first deploy (migrates Neon, pushes the image)
 
@@ -167,54 +173,54 @@ Repo → **Settings → Secrets and variables → Actions**:
 - **Secrets** tab → New repository secret: `DATABASE_URL` = the asyncpg URL from step 1.
 
 Then **Actions** → the latest `ci` run → **Re-run failed jobs** (or push any commit to `main`).
-Green means: schema is in Neon and `fluentpet/api:latest` is in ECR. Check ECR → `fluentpet/api`
-shows an image.
+The `migrate` and `build and push` steps must be green: schema is in Neon and `fluentpet/api:latest`
+is in ECR (check ECR → `fluentpet/api` shows an image). The final `deploy` step fails until the
+instance from step 6 exists — expected.
 
-## 6. App Runner service
+## 6. EC2 instance
 
-App Runner → **Create service**:
+EC2 → **Instances** → **Launch instances**:
 
-**Source and deployment**
-- Repository type **Container registry**, provider **Amazon ECR**
-- Container image URI → **Browse** → `fluentpet/api` → tag `latest`
-- Deployment trigger **Automatic**
-- ECR access role → **Use existing service role** → `fluentpet-apprunner-ecr`
+- **Name** `fluentpet-api` (this becomes the `Name` tag CI targets — exact spelling)
+- **AMI** Amazon Linux 2023 (64-bit x86); **Instance type** `t3.micro`
+- **Key pair** → *Proceed without a key pair* (shell access is via Systems Manager, no SSH)
+- **Network settings** → Edit: **Auto-assign public IP** *Enable*; **Create security group**
+  named `fluentpet-api`; inbound rules: **HTTPS** from Anywhere-IPv4 and **HTTP** from
+  Anywhere-IPv4 (Caddy needs 80 for the certificate). Remove the SSH rule.
+- **Storage** 8 GiB gp3 (default)
+- **Advanced details** → **IAM instance profile** `fluentpet-ec2`; scroll to **User data**, paste:
 
-**Configure service**
-- Service name `fluentpet-api`
-- Virtual CPU **0.25 vCPU**, memory **0.5 GB**
-- Port **8080**
-- Environment variables → Add: **Plain text** `ENV` = `prod`
-- Environment variables → Add, nine times: source **SSM Parameter Store**, name = the variable
-  (`DATABASE_URL`, `FIREBASE_CREDENTIALS_JSON`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `DEVICE_API_KEY`, `JOB_API_KEY`, `SENTRY_DSN`),
-  value = the parameter ARN `arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/<NAME>`
-- Auto scaling → **Custom configuration → Create**: name `fluentpet-small`, min size **1**,
-  max size **2**, max concurrency **80**
-- Health check → protocol **HTTP**, path **`/healthz`**, interval 10, timeout 5,
-  healthy threshold 1, unhealthy threshold 3
-- Security → Instance role → `fluentpet-apprunner-instance`
-- Networking → incoming **Public endpoint**, outgoing **Public access**
+  ```
+  #!/bin/bash
+  curl -fsSL https://raw.githubusercontent.com/yvhumancloud/fluentpet_server_remake/main/deploy/ec2.sh | bash
+  ```
 
-→ Create & deploy. Status goes *Operation in progress* → **Running** in ~5 min. Copy the
-**Default domain** (`xxxx.ap-southeast-1.awsapprunner.com`) — this is the API URL.
+→ **Launch instance**. Open it and copy the **Public IPv4 address** (e.g. `13.212.34.56`).
 
-If it stays in progress and then fails: **Logs → Deployment logs / Application logs** — a
-missing parameter or a wrong ARN shows there as a settings validation error at startup.
+The URL is the IP with dashes on sslip.io: **`https://13-212-34-56.sslip.io`**. First boot takes
+~3 minutes (installs Docker, pulls the image, gets a Let's Encrypt certificate). Check:
 
-Check:
+    curl https://13-212-34-56.sslip.io/healthz     → {"ok":true}
+    open https://13-212-34-56.sslip.io/docs
 
-    curl https://xxxx.ap-southeast-1.awsapprunner.com/healthz     → {"ok":true}
-    open https://xxxx.ap-southeast-1.awsapprunner.com/docs
+If it doesn't come up: Instance → **Connect → Session Manager → Connect** gives a shell;
+`sudo cat /var/log/cloud-init-output.log` shows the first boot, `cd /opt/fluentpet && sudo docker compose logs`
+the containers. A settings validation error at startup means a wrong SSM parameter.
 
-`deploy/apprunner.json` in the repo is the same configuration for the CLI, if you ever recreate
-the service.
+No Elastic IP for now: the IP (and therefore the URL and certificate) changes whenever the
+instance is **stopped and started** (not on reboot). After a start, the API is back at the new
+`https://<new-ip-with-dashes>.sslip.io` automatically once `deploy/ec2.sh` has run again — push to
+`main`, or run the user-data command from a Session Manager shell.
+
+From now on every push to `main` ends with CI running `deploy/ec2.sh` on the box (Systems Manager →
+**Run Command → Command history** shows the output). To redeploy without a code change:
+Actions → latest run → Re-run failed jobs, or run the same curl-pipe-bash from a Session Manager shell.
 
 ## 7. `base_offline` check (no scheduler)
 
 Nothing in the cloud runs it. Trigger it from your laptop whenever you want:
 
-    curl -X POST -H "X-Job-Key: <JOB_API_KEY>" https://xxxx.ap-southeast-1.awsapprunner.com/api/v1/internal/base-offline
+    curl -X POST -H "X-Job-Key: <JOB_API_KEY>" https://<url>/api/v1/internal/base-offline
 
 Response `{"pushed":N}` = number of `base_offline` notifications sent (once per outage, so
 running it often is harmless). Add an EventBridge rule later if you ever want it automatic.
@@ -236,25 +242,27 @@ running it often is harmless). Add an EventBridge rule later if you ever want it
 
 | | after credits |
 |---|---|
-| App Runner 0.25 vCPU / 0.5 GB, 1 warm instance | ~$3–6 / month |
+| EC2 `t3.micro` + 8 GiB disk + public IPv4, always on | ~$14 / month |
 | ECR (a few images) | ~$0.10 |
-| SSM, IAM, CloudWatch logs at this volume | $0 |
+| SSM, IAM, CloudWatch at this volume | $0 |
 | Neon free (100 CU-hours, 0.5 GB, auto-suspend) | $0 |
 | R2 (10 GB, no egress fees) | $0 |
 | Firebase Spark | $0 |
 
-App Runner never scales to zero, but it can be **paused** when nobody is using the app:
-App Runner → service → **Actions → Pause** (no compute billed; URL down) / **Resume** (~2–3 min).
-A push to `main` while paused does not deploy — after resuming, **Actions → Deploy** once.
-Neon suspends itself after 5 idle minutes.
+Nobody using the app: EC2 → instance → **Instance state → Stop** (no compute billed, URL down).
+**Start** brings it back in ~1 min at a **new IP** (see step 6). Neon suspends itself after
+5 idle minutes.
 
-Rotate `DEVICE_API_KEY` / `JOB_API_KEY`: edit the SSM parameter, then App Runner →
-**Actions → Deploy** so instances pick it up.
+Rotate `DEVICE_API_KEY` / `JOB_API_KEY` / any secret: edit the SSM parameter, then redeploy
+(push, re-run the deploy job, or run `deploy/ec2.sh` on the box) — the script rewrites `.env`.
 
 ## Later, if wanted
 
-- Custom domain: App Runner → service → **Custom domains → Link domain** (free cert), then
-  add the CNAME records it shows at your DNS.
-- Sentry: create a project, set `/fluentpet/prod/SENTRY_DSN`, Deploy.
-- A `dev` service: repeat 4c/6 with `/fluentpet/dev/*` parameters and a Neon branch, and a second
-  workflow deploying from a `dev` branch.
+- Stable address: EC2 → **Elastic IPs → Allocate → Associate** with the instance (same price as
+  the auto IP while attached), then the URL never changes.
+- Custom domain: an A record to the IP, then change `HOST=` in `deploy/ec2.sh` — Caddy does the
+  rest. Needed before anything serious: sslip.io shares one Let's Encrypt rate limit with everyone
+  else using it (if Caddy logs `too many certificates already issued`, wait an hour and re-run).
+- Sentry: create a project, set `/fluentpet/prod/SENTRY_DSN`, redeploy.
+- A `dev` box: repeat 4c/6 with `/fluentpet/dev/*` parameters, a Neon branch and tag `Name=fluentpet-api-dev`,
+  plus a second workflow deploying from a `dev` branch.
