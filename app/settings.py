@@ -1,4 +1,7 @@
-from pydantic import model_validator
+import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +20,18 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     # "token:email[:name],..." — bearer tokens that stand in for Firebase in dev/e2e. Never prod.
     dev_tokens: str = ""
+
+    @field_validator("database_url")
+    @classmethod
+    def _asyncpg_url(cls, v: str) -> str:
+        """Accept the URL as Neon prints it: asyncpg wants +asyncpg, ssl= and no channel_binding."""
+        u = urlsplit(re.sub(r"^postgres(ql)?://", "postgresql+asyncpg://", v))
+        q = [
+            ("ssl" if k == "sslmode" else k, x)
+            for k, x in parse_qsl(u.query)
+            if k != "channel_binding"
+        ]
+        return urlunsplit(u._replace(query=urlencode(q)))
 
     @model_validator(mode="after")
     def _no_dev_tokens_in_prod(self):

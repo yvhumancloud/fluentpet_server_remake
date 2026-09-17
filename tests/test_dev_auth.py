@@ -24,3 +24,17 @@ def test_dev_tokens_refused_in_prod():
     assert Settings(
         env="dev", dev_tokens="ann:ann@example.com", database_url="postgresql+asyncpg://x"
     )
+
+
+def test_database_url_accepts_neon_string_as_printed():
+    neon = "postgresql://u:p@ep-x.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    assert (
+        Settings(database_url=neon).database_url
+        == "postgresql+asyncpg://u:p@ep-x.ap-southeast-1.aws.neon.tech/neondb?ssl=require"
+    )
+    flipped = "postgres://u:p@h/db?channel_binding=require&sslmode=require"
+    assert (
+        Settings(database_url=flipped).database_url == "postgresql+asyncpg://u:p@h/db?ssl=require"
+    )
+    local = "postgresql+asyncpg://fluentpet:fluentpet@localhost:5432/fluentpet"
+    assert Settings(database_url=local).database_url == local

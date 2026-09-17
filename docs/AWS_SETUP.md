@@ -31,9 +31,8 @@ Neon console → project → **Connect** → select the branch, database `neondb
 
     postgresql://neondb_owner:XXXX@ep-cool-name-123456.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
 
-Change the driver prefix and the SSL flag — this is `DATABASE_URL`:
-
-    postgresql+asyncpg://neondb_owner:XXXX@ep-cool-name-123456.ap-southeast-1.aws.neon.tech/neondb?ssl=require
+Use it exactly as printed — this is `DATABASE_URL` (the app rewrites it for asyncpg: `+asyncpg`,
+`ssl=`, drops `channel_binding`).
 
 ## 2. Cloudflare R2 (files)
 
