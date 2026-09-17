@@ -1,9 +1,10 @@
-# Production setup: AWS App Runner + Neon + Cloudflare R2 + Firebase
+# Production setup: AWS App Runner + Neon + Cloudflare R2 + Firebase (console walkthrough)
 
-One environment (`prod`). Local development stays on `docker compose`. Everything below is a
-one-time setup; after it, every push to `main` migrates the database and deploys.
+One environment (`prod`), region **`ap-southeast-1` (Singapore)** everywhere. Local development
+stays on `docker compose`. After this one-time setup, every push to `main` migrates the database
+and deploys.
 
-Names used by `.github/workflows/ci.yml` and `deploy/apprunner.json` — keep them:
+Names the code expects (`.github/workflows/ci.yml`, `deploy/apprunner.json`) — keep them:
 
 | Thing | Name |
 |---|---|
@@ -12,239 +13,238 @@ Names used by `.github/workflows/ci.yml` and `deploy/apprunner.json` — keep th
 | SSM parameters | `/fluentpet/prod/<VAR>` |
 | IAM roles | `fluentpet-github-deploy`, `fluentpet-apprunner-ecr`, `fluentpet-apprunner-instance` |
 | GitHub variables / secret | `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN` / `DATABASE_URL` |
+| GitHub repo | `yvhumancloud/fluentpet_server_remake` |
 
-Shell variables used in the commands (set them once):
+Order matters: App Runner needs an image in ECR, and the image comes from CI, so GitHub is
+wired up (step 5) *before* the App Runner service is created (step 6).
 
-```sh
-export AWS_REGION=ap-southeast-1          # see step 0
-export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-export GITHUB_REPO=OWNER/REPO             # e.g. yogesh/fluentpet-backend
-```
+Keep a scratch note open; you will collect these values along the way:
+`ACCOUNT_ID`, Neon URL, R2 account id / key id / secret, Firebase JSON, `DEVICE_API_KEY`,
+`JOB_API_KEY`, App Runner URL.
 
-## 0. Pick a region
+---
 
-Use one region for App Runner and Neon. App Runner is not in every region and Neon is not in
-every region either; the overlap that matters:
+## 1. Neon (database) — done, just grab the URL
 
-| App users mostly in | Region |
-|---|---|
-| India / South-East Asia | `ap-southeast-1` (Singapore) |
-| US | `us-east-1` |
-| Europe | `eu-central-1` |
+Neon console → project → **Connect** → select the branch, database `neondb`, role, and make sure
+**"Connection pooling" is OFF** (direct endpoint). Copy the string; it looks like
 
-## 1. Neon (database) — free
+    postgresql://neondb_owner:XXXX@ep-cool-name-123456.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
 
-1. https://console.neon.tech → New project → name `fluentpet`, Postgres 18, region from step 0.
-2. Copy the **direct** (not pooled) connection string. Turn it into the asyncpg form:
-   `postgresql://user:pass@ep-xxx.aws.neon.tech/neondb?sslmode=require`
-   → `postgresql+asyncpg://user:pass@ep-xxx.aws.neon.tech/neondb?ssl=require`
-3. Keep it; it goes into SSM (step 4c) and GitHub (step 5).
+Change the driver prefix and the SSL flag — this is `DATABASE_URL`:
 
-The pool is 5 connections per App Runner instance; with max 2 instances that is 10, well inside
-Neon's free-tier limit, so no pooler is needed.
+    postgresql+asyncpg://neondb_owner:XXXX@ep-cool-name-123456.ap-southeast-1.aws.neon.tech/neondb?ssl=require
 
-## 2. Cloudflare R2 (files) — free up to 10 GB
+## 2. Cloudflare R2 (files)
 
-1. Cloudflare dashboard → R2 → Create bucket `fluentpet` (location hint: nearest to step 0).
-   No public access, no custom domain — the API hands out 15-minute presigned URLs.
-2. R2 → Manage R2 API Tokens → Create token: permission **Object Read & Write**, scoped to the
-   `fluentpet` bucket. Note the **Access Key ID**, **Secret Access Key**, and the **Account ID**
-   (shown on the R2 overview page / in the S3 endpoint `https://<account id>.r2.cloudflarestorage.com`).
+1. Cloudflare dashboard → **R2 Object Storage** → **Create bucket** → name `fluentpet`,
+   location hint *Asia-Pacific (APAC)* → Create. Leave public access off (the API hands out
+   15-minute presigned URLs).
+2. R2 → **Manage R2 API Tokens** (right side) → **Create API token** →
+   name `fluentpet-api`, permissions **Object Read & Write**, "Specify bucket(s)" → `fluentpet`
+   → Create. Copy **Access Key ID** and **Secret Access Key** now (the secret is shown once).
+3. On the same page the S3 endpoint is shown as `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`;
+   that hex string is `R2_ACCOUNT_ID`. `R2_BUCKET` is `fluentpet`.
 
-## 3. Firebase (auth + push) — free (Spark)
+## 3. Firebase (auth + push)
 
-1. https://console.firebase.google.com → Add project `fluentpet` (Analytics off is fine).
-2. Authentication → Sign-in method → enable **Google**. (Decide now on email/password — PRD open
-   question 1; the backend does not care.)
-3. Add the Android app (package name from the app project) and download `google-services.json`
-   for the app team. Cloud Messaging is on by default.
-4. Project settings → Service accounts → **Generate new private key**. Minify to one line:
-   `jq -c . firebase-key.json` → this is `FIREBASE_CREDENTIALS_JSON`.
-5. Support admins (`X-Login-As`): give their Firebase user the custom claim once, e.g. with the
-   Admin SDK in a Node/Python one-off: `auth.set_custom_user_claims(uid, {"admin": True})`.
+1. Firebase console → project → **Build → Authentication → Get started → Sign-in method** →
+   enable **Google** (add a support email) → Save. (Add Email/Password too if the app will use
+   it — the backend doesn't care.)
+2. Project settings (gear) → **General → Your apps → Add app → Android**, enter the app's
+   package name, download `google-services.json` → that file goes to the app project, not here.
+3. Project settings → **Service accounts** → **Generate new private key** → a JSON file
+   downloads. It must be one line for the env var:
+   `jq -c . ~/Downloads/fluentpet-xxxx.json | pbcopy` (macOS) → this is `FIREBASE_CREDENTIALS_JSON`.
+   Delete the downloaded file afterwards; it is a full-access key.
+4. Cloud Messaging is on by default; nothing to enable.
+5. Later, for support staff who need `X-Login-As`: set the custom claim once with the Admin SDK
+   (`auth.set_custom_user_claims(uid, {"admin": True})`).
 
-## 4. AWS
+## 4. AWS — IAM, ECR, secrets
+
+Sign in to the AWS console as an admin user. Set the region selector (top right) to
+**Asia Pacific (Singapore) ap-southeast-1** and keep it there for everything below.
+Your **Account ID** is under your name (top right) — note it.
 
 ### 4a. ECR repository
 
-```sh
-aws ecr create-repository --repository-name fluentpet/api --region $AWS_REGION \
-  --image-scanning-configuration scanOnPush=true
-```
+ECR → **Repositories** → **Create repository** → Private, name `fluentpet/api`,
+"Scan on push" on → Create.
 
-### 4b. GitHub → AWS deploy role (OIDC, no keys)
+### 4b. GitHub identity provider + deploy role
 
-```sh
-aws iam create-open-id-connect-provider \
-  --url https://token.actions.githubusercontent.com \
-  --client-id-list sts.amazonaws.com    # skip if the account already has this provider
+IAM → **Identity providers** → **Add provider** → OpenID Connect →
+Provider URL `https://token.actions.githubusercontent.com`, Audience `sts.amazonaws.com` → Add.
+(If one with that URL already exists, skip.)
 
-cat > /tmp/trust.json <<EOF
-{ "Version": "2012-10-17", "Statement": [{
-  "Effect": "Allow",
-  "Principal": { "Federated": "arn:aws:iam::$ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com" },
-  "Action": "sts:AssumeRoleWithWebIdentity",
-  "Condition": {
-    "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-    "StringLike":   { "token.actions.githubusercontent.com:sub": "repo:$GITHUB_REPO:ref:refs/heads/main" }
-  }}]}
-EOF
-aws iam create-role --role-name fluentpet-github-deploy --assume-role-policy-document file:///tmp/trust.json
+IAM → **Roles** → **Create role** → **Web identity** → Identity provider
+`token.actions.githubusercontent.com`, Audience `sts.amazonaws.com`,
+GitHub organization `yvhumancloud`, GitHub repository `fluentpet_server_remake`,
+GitHub branch `main` → Next → skip permissions → Next → name `fluentpet-github-deploy` → Create.
 
-cat > /tmp/deploy-policy.json <<EOF
+Open the role → **Permissions → Add permissions → Create inline policy** → **JSON** tab, paste
+(replace `ACCOUNT_ID`):
+
+```json
 { "Version": "2012-10-17", "Statement": [
   { "Effect": "Allow", "Action": "ecr:GetAuthorizationToken", "Resource": "*" },
   { "Effect": "Allow",
     "Action": ["ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:CompleteLayerUpload",
                "ecr:InitiateLayerUpload","ecr:PutImage","ecr:UploadLayerPart"],
-    "Resource": "arn:aws:ecr:$AWS_REGION:$ACCOUNT_ID:repository/fluentpet/api" }
+    "Resource": "arn:aws:ecr:ap-southeast-1:ACCOUNT_ID:repository/fluentpet/api" }
 ]}
-EOF
-aws iam put-role-policy --role-name fluentpet-github-deploy --policy-name ecr-push \
-  --policy-document file:///tmp/deploy-policy.json
 ```
 
-### 4c. Secrets in SSM Parameter Store (free)
+→ name `ecr-push` → Create. Copy the role **ARN** (`arn:aws:iam::ACCOUNT_ID:role/fluentpet-github-deploy`).
 
-```sh
-put() { aws ssm put-parameter --region $AWS_REGION --type SecureString --overwrite --name "/fluentpet/prod/$1" --value "$2"; }
-put DATABASE_URL 'postgresql+asyncpg://…?ssl=require'          # from step 1
-put FIREBASE_CREDENTIALS_JSON "$(jq -c . firebase-key.json)"     # from step 3
-put R2_ACCOUNT_ID '…'; put R2_ACCESS_KEY_ID '…'; put R2_SECRET_ACCESS_KEY '…'; put R2_BUCKET fluentpet
-put DEVICE_API_KEY "$(openssl rand -hex 32)"                      # give this to the device script
-put JOB_API_KEY "$(openssl rand -hex 32)"                         # used by EventBridge in 4f
-put SENTRY_DSN ''                                                 # fill in when you have Sentry
-```
+### 4c. Secrets in SSM Parameter Store
+
+Systems Manager → **Parameter Store** → **Create parameter**, nine times. Each: Standard tier,
+Type **SecureString**, KMS key `alias/aws/ssm` (default):
+
+| Name | Value |
+|---|---|
+| `/fluentpet/prod/DATABASE_URL` | the asyncpg URL from step 1 |
+| `/fluentpet/prod/FIREBASE_CREDENTIALS_JSON` | the one-line JSON from step 3 |
+| `/fluentpet/prod/R2_ACCOUNT_ID` | from step 2 |
+| `/fluentpet/prod/R2_ACCESS_KEY_ID` | from step 2 |
+| `/fluentpet/prod/R2_SECRET_ACCESS_KEY` | from step 2 |
+| `/fluentpet/prod/R2_BUCKET` | `fluentpet` |
+| `/fluentpet/prod/DEVICE_API_KEY` | random: `openssl rand -hex 32` — the device script will need it |
+| `/fluentpet/prod/JOB_API_KEY` | random: `openssl rand -hex 32` — you send it from your laptop to run the base-offline check (step 7) |
+| `/fluentpet/prod/SENTRY_DSN` | a single space for now (SSM refuses empty values); the app treats blank as off |
 
 ### 4d. App Runner roles
 
-```sh
-# lets App Runner pull from ECR
-aws iam create-role --role-name fluentpet-apprunner-ecr --assume-role-policy-document '{
-  "Version":"2012-10-17","Statement":[{"Effect":"Allow",
-  "Principal":{"Service":"build.apprunner.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-aws iam attach-role-policy --role-name fluentpet-apprunner-ecr \
-  --policy-arn arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+**ECR access role** — IAM → Roles → Create role → **Custom trust policy**, paste:
 
-# lets the running service read the SSM secrets
-aws iam create-role --role-name fluentpet-apprunner-instance --assume-role-policy-document '{
-  "Version":"2012-10-17","Statement":[{"Effect":"Allow",
-  "Principal":{"Service":"tasks.apprunner.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-cat > /tmp/instance-policy.json <<EOF
+```json
+{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
+  "Principal": { "Service": "build.apprunner.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }
+```
+
+→ Next → search and tick **`AWSAppRunnerServicePolicyForECRAccess`** → Next →
+name `fluentpet-apprunner-ecr` → Create.
+
+**Instance role** (lets the running service read the secrets) — Create role → Custom trust policy:
+
+```json
+{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
+  "Principal": { "Service": "tasks.apprunner.amazonaws.com" }, "Action": "sts:AssumeRole" } ] }
+```
+
+→ Next → no managed policies → name `fluentpet-apprunner-instance` → Create. Open it →
+Add permissions → Create inline policy → JSON (replace `ACCOUNT_ID`):
+
+```json
 { "Version": "2012-10-17", "Statement": [
   { "Effect": "Allow", "Action": ["ssm:GetParameters","ssm:GetParameter"],
-    "Resource": "arn:aws:ssm:$AWS_REGION:$ACCOUNT_ID:parameter/fluentpet/prod/*" },
+    "Resource": "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/*" },
   { "Effect": "Allow", "Action": "kms:Decrypt", "Resource": "*",
-    "Condition": { "StringEquals": { "kms:ViaService": "ssm.$AWS_REGION.amazonaws.com" } } }
+    "Condition": { "StringEquals": { "kms:ViaService": "ssm.ap-southeast-1.amazonaws.com" } } }
 ]}
-EOF
-aws iam put-role-policy --role-name fluentpet-apprunner-instance --policy-name read-secrets \
-  --policy-document file:///tmp/instance-policy.json
 ```
 
-### 4e. First image, then the service
+→ name `read-secrets` → Create.
 
-App Runner needs an image to exist before the service can be created. Easiest: finish step 5
-(GitHub) first and push to `main` — CI migrates Neon and pushes `fluentpet/api:latest`.
-(Or build once locally: `aws ecr get-login-password | docker login --username AWS --password-stdin
-$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com`, `docker build --platform linux/amd64 -t …/fluentpet/api:latest .`, push,
-and run `DATABASE_URL=… uv run alembic upgrade head` yourself.)
+## 5. GitHub → first deploy (migrates Neon, pushes the image)
 
-```sh
-# caps cost: 1 warm instance, at most 2, 80 concurrent requests each
-ASC=$(aws apprunner create-auto-scaling-configuration --region $AWS_REGION \
-  --auto-scaling-configuration-name fluentpet-small --min-size 1 --max-size 2 --max-concurrency 80 \
-  --query AutoScalingConfiguration.AutoScalingConfigurationArn --output text)
+Repo → **Settings → Secrets and variables → Actions**:
 
-sed -e "s/ACCOUNT_ID/$ACCOUNT_ID/g" -e "s/REGION/$AWS_REGION/g" -e "s|AUTOSCALING_ARN|$ASC|" \
-  deploy/apprunner.json > /tmp/apprunner.json
-aws apprunner create-service --region $AWS_REGION --cli-input-json file:///tmp/apprunner.json
-aws apprunner list-services --region $AWS_REGION      # wait for Status RUNNING (~5 min)
-```
+- **Variables** tab → New repository variable: `AWS_REGION` = `ap-southeast-1`;
+  `AWS_DEPLOY_ROLE_ARN` = the ARN from 4b.
+- **Secrets** tab → New repository secret: `DATABASE_URL` = the asyncpg URL from step 1.
 
-Note the `ServiceUrl` (`xxxx.$AWS_REGION.awsapprunner.com`). Check:
+Then **Actions** → the latest `ci` run → **Re-run failed jobs** (or push any commit to `main`).
+Green means: schema is in Neon and `fluentpet/api:latest` is in ECR. Check ECR → `fluentpet/api`
+shows an image.
 
-```sh
-curl https://SERVICE_URL/healthz            # {"ok":true}
-open https://SERVICE_URL/docs
-```
+## 6. App Runner service
 
-### 4f. Hourly `base_offline` job (EventBridge → the API)
+App Runner → **Create service**:
 
-```sh
-JOB_KEY=$(aws ssm get-parameter --region $AWS_REGION --with-decryption --name /fluentpet/prod/JOB_API_KEY --query Parameter.Value --output text)
-CONN=$(aws events create-connection --region $AWS_REGION --name fluentpet-job --authorization-type API_KEY \
-  --auth-parameters "ApiKeyAuthParameters={ApiKeyName=X-Job-Key,ApiKeyValue=$JOB_KEY}" \
-  --query ConnectionArn --output text)
-DEST=$(aws events create-api-destination --region $AWS_REGION --name fluentpet-base-offline \
-  --connection-arn $CONN --http-method POST \
-  --invocation-endpoint https://SERVICE_URL/api/v1/internal/base-offline \
-  --query ApiDestinationArn --output text)
+**Source and deployment**
+- Repository type **Container registry**, provider **Amazon ECR**
+- Container image URI → **Browse** → `fluentpet/api` → tag `latest`
+- Deployment trigger **Automatic**
+- ECR access role → **Use existing service role** → `fluentpet-apprunner-ecr`
 
-aws iam create-role --role-name fluentpet-events-invoke --assume-role-policy-document '{
-  "Version":"2012-10-17","Statement":[{"Effect":"Allow",
-  "Principal":{"Service":"events.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
-aws iam put-role-policy --role-name fluentpet-events-invoke --policy-name invoke --policy-document "{
-  \"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"events:InvokeApiDestination\",\"Resource\":\"$DEST\"}]}"
+**Configure service**
+- Service name `fluentpet-api`
+- Virtual CPU **0.25 vCPU**, memory **0.5 GB**
+- Port **8080**
+- Environment variables → Add: **Plain text** `ENV` = `prod`
+- Environment variables → Add, nine times: source **SSM Parameter Store**, name = the variable
+  (`DATABASE_URL`, `FIREBASE_CREDENTIALS_JSON`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `DEVICE_API_KEY`, `JOB_API_KEY`, `SENTRY_DSN`),
+  value = the parameter ARN `arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/fluentpet/prod/<NAME>`
+- Auto scaling → **Custom configuration → Create**: name `fluentpet-small`, min size **1**,
+  max size **2**, max concurrency **80**
+- Health check → protocol **HTTP**, path **`/healthz`**, interval 10, timeout 5,
+  healthy threshold 1, unhealthy threshold 3
+- Security → Instance role → `fluentpet-apprunner-instance`
+- Networking → incoming **Public endpoint**, outgoing **Public access**
 
-aws events put-rule --region $AWS_REGION --name fluentpet-base-offline-hourly --schedule-expression "rate(1 hour)"
-aws events put-targets --region $AWS_REGION --rule fluentpet-base-offline-hourly \
-  --targets "Id=api,Arn=$DEST,RoleArn=arn:aws:iam::$ACCOUNT_ID:role/fluentpet-events-invoke"
-```
+→ Create & deploy. Status goes *Operation in progress* → **Running** in ~5 min. Copy the
+**Default domain** (`xxxx.ap-southeast-1.awsapprunner.com`) — this is the API URL.
 
-Manual run any time: `curl -X POST -H "X-Job-Key: $JOB_KEY" https://SERVICE_URL/api/v1/internal/base-offline`.
+If it stays in progress and then fails: **Logs → Deployment logs / Application logs** — a
+missing parameter or a wrong ARN shows there as a settings validation error at startup.
 
-## 5. GitHub
+Check:
 
-Repository → Settings → Secrets and variables → Actions:
+    curl https://xxxx.ap-southeast-1.awsapprunner.com/healthz     → {"ok":true}
+    open https://xxxx.ap-southeast-1.awsapprunner.com/docs
 
-| Kind | Name | Value |
-|---|---|---|
-| Variable | `AWS_REGION` | from step 0 |
-| Variable | `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::ACCOUNT_ID:role/fluentpet-github-deploy` |
-| Secret | `DATABASE_URL` | the Neon asyncpg URL (CI runs `alembic upgrade head` with it) |
+`deploy/apprunner.json` in the repo is the same configuration for the CLI, if you ever recreate
+the service.
 
-Push to `main`. The `deploy` job migrates, builds, pushes `:latest`; App Runner picks it up
-(auto-deploy) and swaps instances once `/healthz` passes.
+## 7. `base_offline` check (no scheduler)
 
-## 6. Smoke test
+Nothing in the cloud runs it. Trigger it from your laptop whenever you want:
 
-1. `curl https://SERVICE_URL/healthz`
-2. Sign in from the app (Firebase) → `GET /api/v1/me` returns a fresh household.
-3. Device: `curl -H "X-Device-Key: …" "https://SERVICE_URL/api/v1/device/desired?serial_number=X"` → `[]`.
-4. `POST /api/v1/internal/base-offline` with the job key → `{"pushed":0}`.
-5. Optional: `DATABASE_URL=<neon> PYTHONPATH=. uv run python scripts/loadtest.py` to see search
-   latency on Neon (then delete the `load@example.com` household from Neon's SQL editor).
+    curl -X POST -H "X-Job-Key: <JOB_API_KEY>" https://xxxx.ap-southeast-1.awsapprunner.com/api/v1/internal/base-offline
 
-## Cost (after the credits)
+Response `{"pushed":N}` = number of `base_offline` notifications sent (once per outage, so
+running it often is harmless). Add an EventBridge rule later if you ever want it automatic.
 
-| | |
+## 8. Smoke test
+
+1. `curl https://<url>/healthz` → `{"ok":true}`
+2. `curl https://<url>/api/v1/me` → 401 with the JSON error envelope (auth is on).
+3. Sign in from the app (Firebase) → `GET /api/v1/me` → a fresh household.
+   Without the app yet: Firebase console → Authentication → add a test user, then get an ID
+   token via the REST API — or just wait for the app; the backend part is verified by 2.
+4. Device: `curl -H "X-Device-Key: <DEVICE_API_KEY>" "https://<url>/api/v1/device/desired?serial_number=FPB000000001"` → `[]`
+5. Job: the curl from step 7 → `{"pushed":0}`
+6. Optional: `DATABASE_URL=<neon> PYTHONPATH=. uv run python scripts/loadtest.py` from your
+   laptop to see search latency on Neon; afterwards delete the `load@example.com` household in
+   Neon's SQL editor (`delete from users where email='load@example.com'; delete from households where id not in (select household_id from users);`).
+
+## Cost and switching it off
+
+| | after credits |
 |---|---|
-| App Runner 0.25 vCPU / 0.5 GB, 1 warm instance | ~$3–6 |
+| App Runner 0.25 vCPU / 0.5 GB, 1 warm instance | ~$3–6 / month |
 | ECR (a few images) | ~$0.10 |
-| EventBridge, SSM, IAM | $0 |
-| Neon free tier (0.5 GB storage, scales to zero) | $0 |
+| SSM, IAM, CloudWatch logs at this volume | $0 |
+| Neon free (100 CU-hours, 0.5 GB, auto-suspend) | $0 |
 | R2 (10 GB, no egress fees) | $0 |
-| Firebase Spark (Auth, FCM) | $0 |
+| Firebase Spark | $0 |
 
-App Runner never scales to zero, but it can be paused when nobody is using the app (no compute
-billed while paused; the URL is down; a push to `main` while paused does not deploy):
+App Runner never scales to zero, but it can be **paused** when nobody is using the app:
+App Runner → service → **Actions → Pause** (no compute billed; URL down) / **Resume** (~2–3 min).
+A push to `main` while paused does not deploy — after resuming, **Actions → Deploy** once.
+Neon suspends itself after 5 idle minutes.
 
-```sh
-SERVICE_ARN=$(aws apprunner list-services --region $AWS_REGION --query "ServiceSummaryList[?ServiceName=='fluentpet-api'].ServiceArn" --output text)
-aws apprunner pause-service  --region $AWS_REGION --service-arn $SERVICE_ARN
-aws apprunner resume-service --region $AWS_REGION --service-arn $SERVICE_ARN   # ~2–3 min; then
-aws apprunner start-deployment --region $AWS_REGION --service-arn $SERVICE_ARN # if an image was pushed meanwhile
-```
-
-Neon suspends itself after 5 idle minutes; nothing to do there.
-
-Rotate `DEVICE_API_KEY` / `JOB_API_KEY`: `put` the new value in SSM, then
-`aws apprunner start-deployment --service-arn …` so instances pick it up.
+Rotate `DEVICE_API_KEY` / `JOB_API_KEY`: edit the SSM parameter, then App Runner →
+**Actions → Deploy** so instances pick it up.
 
 ## Later, if wanted
 
-* Custom domain: App Runner → Custom domains (free cert), then point a CNAME at it.
-* A `dev` service: repeat 4c/4e with `/fluentpet/dev/*` parameters and a Neon branch, and a
-  second workflow deploying from a `dev` branch.
-* Sentry: create a project, `put SENTRY_DSN …`, redeploy.
+- Custom domain: App Runner → service → **Custom domains → Link domain** (free cert), then
+  add the CNAME records it shows at your DNS.
+- Sentry: create a project, set `/fluentpet/prod/SENTRY_DSN`, Deploy.
+- A `dev` service: repeat 4c/6 with `/fluentpet/dev/*` parameters and a Neon branch, and a second
+  workflow deploying from a `dev` branch.

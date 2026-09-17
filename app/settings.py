@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket: str = ""
     device_api_key: str = ""
-    job_api_key: str = ""  # X-Job-Key for /internal/* (EventBridge → API destination)
+    job_api_key: str = ""  # X-Job-Key for /internal/* (triggered by hand)
     sentry_dsn: str = ""
     # "token:email[:name],..." — bearer tokens that stand in for Firebase in dev/e2e. Never prod.
     dev_tokens: str = ""

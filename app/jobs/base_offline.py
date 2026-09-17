@@ -1,6 +1,6 @@
-"""Hourly: tell households about bases that went quiet.
+"""Tell households about bases that went quiet.
 
-EventBridge calls POST /internal/base-offline; by hand: python -m app.jobs.base_offline
+Triggered by hand: POST /internal/base-offline (X-Job-Key) or python -m app.jobs.base_offline
 """
 
 import asyncio

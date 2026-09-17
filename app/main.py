@@ -36,8 +36,8 @@ if settings.dev_tokens:
     logging.getLogger("fluentpet").warning(
         "DEV_TOKENS set: bearer tokens bypass Firebase (%s)", settings.env
     )
-if settings.sentry_dsn:
-    sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.env)
+if settings.sentry_dsn.strip():  # SSM cannot store an empty value; blank means off
+    sentry_sdk.init(dsn=settings.sentry_dsn.strip(), environment=settings.env)
 
 app = FastAPI(title="FluentPet API", docs_url="/docs")
 for r in (

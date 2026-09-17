@@ -32,8 +32,9 @@ After that, CI (`.github/workflows/ci.yml`) tests every PR and, on `main`, runs 
 head` against Neon and pushes the image to ECR; App Runner auto-deploys `:latest`. Repo variables
 `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`; secret `DATABASE_URL`.
 
-The hourly base-offline check is `POST /api/v1/internal/base-offline` (header `X-Job-Key`),
-called by an EventBridge rule; `python -m app.jobs.base_offline` runs the same thing by hand.
+The base-offline check is not scheduled anywhere; run it from your laptop:
+`curl -X POST -H "X-Job-Key: $JOB_API_KEY" https://<url>/api/v1/internal/base-offline`
+(`python -m app.jobs.base_offline` does the same against the local DB).
 
 ## Device script
 

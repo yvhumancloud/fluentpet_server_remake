@@ -12,7 +12,7 @@ PRD disagree, the tests win — they are the behaviour that actually ships.
 A FastAPI 0.141 / Python 3.14 backend for the FluentPet remake app. Postgres 18 via SQLAlchemy
 2 async + Alembic, Firebase Auth for users, FCM for push, Cloudflare R2 (S3 API via boto3) for
 audio and avatars, one AWS App Runner service (hosting moved from GCP to AWS to use credits;
-migrations run from CI, the hourly base-offline check is an EventBridge-triggered endpoint).
+migrations run from CI, the base-offline check is an endpoint the user hits from a laptop).
 No queue, no Redis, no AWS IoT — a device script you write talks to `/api/v1/device/*`.
 
 ```
@@ -56,7 +56,7 @@ tests. Auth is faked by overriding `get_claims`; FCM, R2 and webhook HTTP are fa
 | `FIREBASE_CREDENTIALS_JSON` | service-account JSON (one line) for token verification + FCM |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | audio + avatars |
 | `DEVICE_API_KEY` | shared secret for `/device/*` (`X-Device-Key`) |
-| `JOB_API_KEY` | shared secret for `/internal/*` (`X-Job-Key`), used by the EventBridge schedule |
+| `JOB_API_KEY` | shared secret for `/internal/*` (`X-Job-Key`), sent by the user's local trigger script |
 | `DEV_TOKENS` | dev only: `ann:ann@example.com:Ann,…` bearer tokens that bypass Firebase; refused when `ENV=prod` |
 | `SENTRY_DSN` | optional |
 | `ENV` | `dev` / `prod`; only used as the Sentry environment tag |
@@ -151,15 +151,15 @@ ever matters, add a trigram index on `interactions.note` / `notes.text`.
 * DNS-rebinding window on webhooks (resolve-then-connect). Pin the IP if it ever matters.
 * Search is several statements (count, page, counts, hydrate), not the single window-function
   query the PRD imagined; it is well under budget, so it stayed simple.
-* `base_offline` runs only when the EventBridge rule calls `/internal/base-offline` hourly
-  (`docs/AWS_SETUP.md` 4f); without it no offline pushes go out.
+* `base_offline` runs only when someone calls `/internal/base-offline` (`docs/AWS_SETUP.md` §7,
+  triggered from the user's laptop by choice — no EventBridge); nothing calls it otherwise.
 * No rate limiting on the device key; it is a long shared secret, rotate it via Secret Manager.
 * `X-Login-As` trusts the Firebase `admin` custom claim; set it with the Admin SDK only.
 
 ## Milestone 6 checklist (accounts, not done)
 
 Follow `docs/AWS_SETUP.md` top to bottom: region → Neon → R2 → Firebase → AWS (ECR, OIDC deploy
-role, SSM secrets, App Runner roles + service, EventBridge hourly rule) → GitHub variables →
+role, SSM secrets, App Runner roles + service) → GitHub variables →
 push to `main` → smoke test. Then:
 
 * Play Store account-deletion URL (PRD open question 4): a static page; `DELETE /me` already

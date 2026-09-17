@@ -1,4 +1,4 @@
-"""Scheduled work, triggered over HTTP (EventBridge API destination) instead of a job runner."""
+"""Maintenance work exposed over HTTP (X-Job-Key), triggered by hand instead of a scheduler."""
 
 from fastapi import APIRouter, Depends
 
