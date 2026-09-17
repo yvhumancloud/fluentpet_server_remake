@@ -228,16 +228,18 @@ running it often is harmless). Add an EventBridge rule later if you ever want it
 
 ## 8. Smoke test
 
-1. `curl https://<url>/healthz` → `{"ok":true}`
-2. `curl https://<url>/api/v1/me` → 401 with the JSON error envelope (auth is on).
-3. Sign in from the app (Firebase) → `GET /api/v1/me` → a fresh household.
-   Without the app yet: Firebase console → Authentication → add a test user, then get an ID
-   token via the REST API — or just wait for the app; the backend part is verified by 2.
-4. Device: `curl -H "X-Device-Key: <DEVICE_API_KEY>" "https://<url>/api/v1/device/desired?serial_number=FPB000000001"` → `[]`
-5. Job: the curl from step 7 → `{"pushed":0}`
-6. Optional: `DATABASE_URL=<neon> PYTHONPATH=. uv run python scripts/loadtest.py` from your
-   laptop to see search latency on Neon; afterwards delete the `load@example.com` household in
-   Neon's SQL editor (`delete from users where email='load@example.com'; delete from households where id not in (select household_id from users);`).
+Put the prod `DEVICE_API_KEY` and `JOB_API_KEY` (values from SSM) in a local `.env.prod`
+(gitignored), then from the repo:
+
+    scripts/smoke.sh https://<ip-with-dashes>.sslip.io .env.prod
+
+Nine `ok` lines and exit 0: health, auth envelope, dev tokens refused, device key + Neon
+round-trip (`[]`), base-offline job (`{"pushed":0}`), `/internal` hidden from OpenAPI.
+
+Then sign in from the app (Firebase) → `GET /api/v1/me` → a fresh household. Optional:
+`DATABASE_URL=<neon> PYTHONPATH=. uv run python scripts/loadtest.py` to see search latency on Neon;
+afterwards delete the `load@example.com` household in Neon's SQL editor
+(`delete from users where email='load@example.com'; delete from households where id not in (select household_id from users);`).
 
 ## Cost and switching it off
 
