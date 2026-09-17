@@ -78,10 +78,21 @@ IAM → **Identity providers** → **Add provider** → OpenID Connect →
 Provider URL `https://token.actions.githubusercontent.com`, Audience `sts.amazonaws.com` → Add.
 (If one with that URL already exists, skip.)
 
-IAM → **Roles** → **Create role** → **Web identity** → Identity provider
-`token.actions.githubusercontent.com`, Audience `sts.amazonaws.com`,
-GitHub organization `yvhumancloud`, GitHub repository `fluentpet_server_remake`,
-GitHub branch `main` → Next → skip permissions → Next → name `fluentpet-github-deploy` → Create.
+IAM → **Roles** → **Create role** → **Custom trust policy** (not the Web-identity wizard: it writes
+the old `repo:org/repo:…` subject, but GitHub now sends `repo:org@OWNER_ID/repo@REPO_ID:…`). Get the
+two ids with `curl -s https://api.github.com/repos/yvhumancloud/fluentpet_server_remake | jq '.owner.id, .id'`
+and paste (replace `ACCOUNT_ID`, `OWNER_ID`, `REPO_ID`):
+
+```json
+{ "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
+  "Principal": { "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com" },
+  "Action": "sts:AssumeRoleWithWebIdentity",
+  "Condition": { "StringEquals": {
+    "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+    "token.actions.githubusercontent.com:sub": "repo:yvhumancloud@OWNER_ID/fluentpet_server_remake@REPO_ID:ref:refs/heads/main" } } } ] }
+```
+
+→ Next → skip permissions → Next → name `fluentpet-github-deploy` → Create.
 
 Open the role → **Permissions → Add permissions → Create inline policy** → **JSON** tab, paste
 (replace `ACCOUNT_ID`):
