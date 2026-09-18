@@ -209,9 +209,9 @@ If it doesn't come up: Instance → **Connect → Session Manager → Connect** 
 the containers. A settings validation error at startup means a wrong SSM parameter.
 
 No Elastic IP for now: the IP (and therefore the URL and certificate) changes whenever the
-instance is **stopped and started** (not on reboot). After a start, the API is back at the new
-`https://<new-ip-with-dashes>.sslip.io` automatically once `deploy/ec2.sh` has run again — push to
-`main`, or run the user-data command from a Session Manager shell.
+instance is **stopped and started** (not on reboot). The script installs a boot-time service that
+re-runs it, so ~2 minutes after a start the API is back at the new
+`https://<new-ip-with-dashes>.sslip.io` by itself (a fresh certificate is issued each time).
 
 From now on every push to `main` ends with CI running `deploy/ec2.sh` on the box (Systems Manager →
 **Run Command → Command history** shows the output). To redeploy without a code change:

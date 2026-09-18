@@ -39,6 +39,22 @@ volumes:
 EOF
 printf '%s {\n\treverse_proxy api:8080\n}\n' "$HOST" > Caddyfile
 
+# Re-run at every boot: without an Elastic IP the address (hence hostname + cert) changes on stop/start
+cat > /etc/systemd/system/fluentpet-boot.service <<'EOF'
+[Unit]
+Description=FluentPet: re-run deploy/ec2.sh for the current public IP
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/yvhumancloud/fluentpet_server_remake/main/deploy/ec2.sh | bash'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable -q fluentpet-boot.service
+
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 docker compose pull -q
 docker compose up -d --remove-orphans
