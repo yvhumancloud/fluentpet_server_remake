@@ -1,4 +1,5 @@
 import json
+import logging
 import secrets
 from functools import cache
 from typing import Annotated, Any
@@ -17,6 +18,7 @@ from app.models import Button, Household, ImpersonationLog, Pusher, User
 from app.settings import settings
 
 INAUDIBLE = "inaudible"
+log = logging.getLogger(__name__)
 
 
 @cache
@@ -38,6 +40,7 @@ def get_claims(authorization: Annotated[str | None, Header()] = None) -> dict[st
     try:
         return fb_auth.verify_id_token(authorization[7:], app=firebase_app(), check_revoked=False)
     except (ValueError, fb_auth.InvalidIdTokenError, fb_auth.ExpiredIdTokenError) as e:
+        log.warning("token rejected: %s", e)  # also covers a bad FIREBASE_CREDENTIALS_JSON
         raise Unauthenticated("invalid token") from e
 
 
