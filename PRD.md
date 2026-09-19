@@ -70,6 +70,21 @@ Cloud Scheduler ──hourly──▶ Cloud Run Job: base-offline-check
 
 **Background work.** Push sends and button webhooks run in FastAPI `BackgroundTasks` after the response is sent. There is one scheduled job. Nothing else needs a worker.
 
+**Sizing: before and after.** The product has under 100 active users a day. The previous architecture was sized for growth; this one is sized for that load, with every user-facing capability kept on a cheaper implementation. Sizes below are read from the old repository's `infrastructure/aws` Terraform stacks and Copilot manifests; prices are AWS list prices (us-west-2, on-demand, 24/7), before credits or discounts, and are estimates until checked against an invoice.
+
+| Capability | Before | After |
+|---|---|---|
+| API | ECS Fargate, 2 vCPU / 4 GB task behind an ALB | One container on one EC2 `t3.micro` behind Caddy |
+| Background work (push, webhooks) | Sidekiq worker service (2 vCPU / 4 GB) + ElastiCache Redis (`cache.t3.medium`) | After-commit tasks in the API process; one on-demand job |
+| Database | Aurora PostgreSQL Serverless v1, 4 ACU floor, auto-pause off | Neon Postgres, scales to zero |
+| Device events | AWS IoT Core topic rules + Lambda | The client's device script calls `/device/*` over HTTPS |
+| Analytics | Redshift `dc2.large` + ETL buckets | Stats endpoints on the primary database |
+| Files | S3 (5 buckets) + EFS | Cloudflare R2, presigned URLs |
+| Network and access | NAT Gateway, bastion `t2.micro`, WAF | Security group on one box, SSM Session Manager |
+| Auth, push, errors | Auth0, Expo push, Datadog APM | Firebase Auth, FCM, JSON logs + Sentry |
+| Infrastructure cost, list price | ≈ 650–690 USD/month (≈ 470–510 without Redshift) | ≈ 13 USD/month (instance ≈ 10, public IPv4 ≈ 3.7) |
+| Footprint | 14 paid components, 51 tables, ~130 routes, 8,400 lines | 4 components, 23 tables, 63 routes, 4,500 lines |
+
 ## 5. Data model
 
 Nineteen tables. All ids are `bigint identity`. All timestamps are `timestamptz`. Soft delete (`deleted_at`) exists only on `interactions`, `notes`, and `buttons`, where the product has undo; everything else hard-deletes.
