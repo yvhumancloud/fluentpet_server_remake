@@ -21,6 +21,9 @@ from app.settings import settings
 
 log = logging.getLogger("fluentpet.ai")
 DAILY_LIMIT = {"chat": 30, "log_text": 50}  # per user, rolling 24 h
+# Replies are short, but reasoning models spend thinking inside max_tokens (measured: a digest
+# on deepseek-v4.1-flash used ~1,500 output tokens before any text) — leave room.
+MAX_TOKENS = 8192
 
 
 class AiUnavailable(ApiError):
@@ -39,7 +42,7 @@ def client() -> anthropic.AsyncAnthropic:
         api_key=settings.anthropic_api_key.strip() or None,
         auth_token=settings.anthropic_auth_token.strip() or None,
         base_url=settings.anthropic_base_url.strip() or None,
-        timeout=30,
+        timeout=settings.ai_timeout_seconds,
         max_retries=1,
     )
 
@@ -167,7 +170,10 @@ class LogTextDraft(BaseModel):
 def parse_json_text(response, model: type[BaseModel]) -> BaseModel:
     """The reply as `model`, tolerating a ```json fence around it."""
     text = text_of(response).removeprefix("```json").removeprefix("```").removesuffix("```")
-    return model.model_validate_json(text.strip())
+    try:
+        return model.model_validate_json(text.strip())
+    except ValidationError as e:
+        raise AiUnavailable("AI gave no usable answer, try again") from e
 
 
 async def log_text(session: AsyncSession, user: User, text: str) -> tuple[InteractionIn, list[str]]:
@@ -176,7 +182,7 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
     if settings.ai_is_claude:
         request = lambda c: c.messages.parse(  # noqa: E731
             model=settings.ai_model,
-            max_tokens=2048,
+            max_tokens=MAX_TOKENS,
             system=system,
             messages=[{"role": "user", "content": text}],
             output_format=LogTextDraft,
@@ -186,7 +192,7 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
         schema = json.dumps(LogTextDraft.model_json_schema()["properties"])
         request = lambda c: c.messages.create(  # noqa: E731
             model=settings.ai_model,
-            max_tokens=2048,
+            max_tokens=MAX_TOKENS,
             system=f"{system}\nReply with one JSON object and nothing else, fields: {schema}",
             messages=[{"role": "user", "content": text}],
         )
@@ -241,7 +247,12 @@ def trim_stats(out: StatsSummaryOut) -> StatsSummaryOut:
 
 
 def text_of(response) -> str:
-    return "".join(b.text for b in response.content if b.type == "text").strip()
+    """The answer text. Blank or cut off (a reasoning model can spend the whole `max_tokens`
+    thinking) is a failure: the caller rolls back, nothing half-made is stored or charged."""
+    text = "".join(b.text for b in response.content if b.type == "text").strip()
+    if not text or response.stop_reason == "max_tokens":
+        raise AiUnavailable("AI gave no usable answer, try again")
+    return text
 
 
 def chat_tools(session: AsyncSession, user: User):
@@ -344,7 +355,7 @@ async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
     async def run(c):
         runner = c.beta.messages.tool_runner(
             model=settings.ai_model,
-            max_tokens=2048,
+            max_tokens=MAX_TOKENS,
             tools=chat_tools(session, user),
             messages=messages,
             max_iterations=CHAT_MAX_TOOL_ROUNDS + 1,
@@ -361,8 +372,9 @@ async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
 DIGEST_SYSTEM = """Write the weekly digest for a FluentPet household: what each learner (pet) said \
 with their sound buttons this week, compared with last week. At most 3 sentences, plain text, \
 warm but factual. Name the learner, give the top button with its count, the usual time of day if \
-the per-hour data shows one, one change versus last week, and any button first pressed this week \
-(buttons_created). Only state what is in the data."""
+the per-hour data shows one, one change versus last week, and any button introduced this week \
+(the buttons_created list). Write for the family: plain words, never field names. Only state \
+what is in the data."""
 
 
 async def digest(session: AsyncSession, user: User, learners_stats: list[dict]) -> str:
@@ -371,7 +383,7 @@ async def digest(session: AsyncSession, user: User, learners_stats: list[dict]) 
         "digest",
         lambda c: c.messages.create(
             model=settings.ai_model,
-            max_tokens=1024,
+            max_tokens=MAX_TOKENS,
             system=DIGEST_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(learners_stats)}],
             **({"output_config": {"effort": "medium"}} if settings.ai_is_claude else {}),

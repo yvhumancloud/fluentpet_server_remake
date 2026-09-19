@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     anthropic_auth_token: str = ""  # Authorization: Bearer (gateways such as Token Harbor)
     anthropic_base_url: str = ""  # blank = api.anthropic.com; any Messages-API-compatible host
     ai_model: str = "claude-opus-5"
+    ai_timeout_seconds: int = 30  # per request; free gateway lanes queue for a minute or more
 
     @property
     def ai_configured(self) -> bool:

@@ -328,7 +328,7 @@ Added 2026-09-19. Three features, each one call to the Claude API made from insi
 
 New environment variables: `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (neither = every AI endpoint answers 503 `ai_unavailable`, the app must work fully without it), `ANTHROPIC_BASE_URL` (blank = Anthropic; any Messages-API-compatible gateway such as Token Harbor, whose free tier includes `deepseek-v4.1-flash`), `AI_MODEL` (default `claude-opus-5`). Stored in SSM like the other secrets. Claude-only request extras (effort, structured-output schema, prompt caching) are sent only when the model id starts with `claude`; other models get the schema in the prompt and JSON parsed from the reply.
 
-Client settings: `timeout=30`, `max_retries=1` (worst case 60 s wall clock). Prompt caching on the system block. Adaptive thinking (the model default), `effort: low` for chat and log-by-text, `medium` for the digest.
+Client settings: `timeout=AI_TIMEOUT_SECONDS` (default 30; free gateway lanes measured at 25–60 s per call need 120+), `max_retries=1` (worst case 2× the timeout). Prompt caching on the system block. Adaptive thinking (the model default), `effort: low` for chat and log-by-text, `medium` for the digest.
 
 ### 12.2 Data model
 
@@ -379,7 +379,7 @@ Per-call estimates at list prices, cached system prompt, `effort: low`:
 | Log by text | ~1.5k / 100 | $0.01 | $0.004 | $0.002 |
 | Digest, per household | ~2k / 150 | $0.014 | $0.006 | $0.003 |
 
-At 100 active households, 20 % using chat 10 turns a week, every household getting a digest: Opus ≈ $38 / month, Sonnet ≈ $15, Haiku ≈ $7. **This sits on top of the $5 infrastructure target and scales with users; the model choice and the per-user caps are the controls.** `AI_MODEL` switches without a code change. Decision on the launch model is open (12.9).
+At 100 active households, 20 % using chat 10 turns a week, every household getting a digest: Opus ≈ $38 / month, Sonnet ≈ $15, Haiku ≈ $7. Through Token Harbor, `deepseek-v4.1-flash:free` is $0 on a rolling 7-day allowance (paid: $0.30 / $1.20 per MTok) — measured 2026-09-19 on the free lane: log-text 26–31 s, chat 2 min, digest ~52 s per household, so it is a dev/launch option, not a UX one. **This sits on top of the $5 infrastructure target and scales with users; the model choice and the per-user caps are the controls.** `AI_MODEL` switches without a code change. Decision on the launch model is open (12.9).
 
 ### 12.8 Non-functional
 

@@ -125,6 +125,11 @@ functions when a reply names them).
   Messages-compatible gateway (Token Harbor: `deepseek-v4.1-flash` is on their free tier).
   `settings.ai_is_claude` gates the Claude-only extras (effort, `messages.parse` schema,
   cache_control); other models get the schema in the prompt and the JSON parsed from text.
+* Live-checked 2026-09-19 on Token Harbor + `deepseek-v4.1-flash:free`: all three features
+  work (tool use translates), but the free lane is slow (log-text ~30 s, chat ~2 min, digest
+  ~50 s/household) — `AI_TIMEOUT_SECONDS=150` locally. Reasoning models spend thinking inside
+  `max_tokens`; `MAX_TOKENS = 8192` and a blank/`max_tokens` reply is a failure, not a stored
+  empty note (`text_of`).
 * Not done on purpose: MCP, RAG, streaming, stored chat threads (PRD §12.10).
 * Ceiling: an AI request holds its pooled connection (of 5) for the model call, ~5–10 s. Fine at
   launch; if it bites, tools open their own `SessionLocal()` (PRD §12.8).

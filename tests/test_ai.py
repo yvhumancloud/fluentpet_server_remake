@@ -319,3 +319,28 @@ async def test_non_claude_model_gets_plain_requests_and_json_is_parsed_from_text
     assert r.status_code == 200 and r.json()["reply"] == "hi"
     call = claude.calls[1]
     assert "output_config" not in call and isinstance(call["system"], str)
+
+
+async def test_blank_or_truncated_answers_are_failures(client, as_user, claude, fcm, monkeypatch):
+    monkeypatch.setattr("app.auth.settings.job_api_key", "job-secret")
+    rex, outside, _ = await setup_household(client, as_user)
+    for d in (0, 1, 2):
+        await log(client, rex, [outside], day(d, 8))
+
+    claude.reply({"text": "", "stop_reason": "max_tokens"})  # reasoning ate the budget
+    r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
+    assert r.json() == {"sent": 0, "skipped": 1} and fcm.sent == []
+    r = await client.post(f"{API}/interactions/search", json={"filters": {"notes": "only"}})
+    assert r.json()["items"] == []
+
+    claude.reply(["Rex said", {"text": "Rex said OUTS", "stop_reason": "max_tokens"}][1:])
+    r = await client.post(f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "?"}]})
+    assert r.status_code == 503 and r.json()["error"]["code"] == "ai_unavailable"
+    claude.reply(["fine"])
+    r = await client.post(f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "?"}]})
+    assert r.json() == {"reply": "fine", "remaining_today": 29}  # the failed turn cost no quota
+
+    monkeypatch.setattr("app.services.ai.settings.ai_model", "deepseek-v4.1-flash:free")
+    claude.reply('{"pusher_id": 1, "button_ids": [1')  # cut mid-JSON
+    r = await client.post(f"{API}/ai/log-text", json={"text": "x"})
+    assert r.status_code == 503 and r.json()["error"]["code"] == "ai_unavailable"

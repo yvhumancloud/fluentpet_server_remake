@@ -6,6 +6,8 @@ os.environ["DATABASE_URL"] = os.environ.get(
 )
 os.environ["DEVICE_API_KEY"] = "test-device-key"
 os.environ["ANTHROPIC_API_KEY"] = "test-anthropic-key"
+# never the developer's .env provider: tests pin the Claude path, one test flips the model
+os.environ.update(AI_MODEL="claude-opus-5", ANTHROPIC_BASE_URL="", ANTHROPIC_AUTH_TOKEN="")
 
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
@@ -132,6 +134,7 @@ class FakeClaude:
     A reply is the structured object for `messages.parse`, the text for `messages.create`, or for
     `beta.messages.tool_runner` a list of steps: `("tool_name", {args})` tuples the fake runs
     against the real tool functions (results land in `tool_results`), then the final text.
+    A final `{"text": ..., "stop_reason": "max_tokens"}` dict stands in for a truncated answer.
     `error` makes the next call raise it (any anthropic.APIError subclass).
     """
 
@@ -160,14 +163,21 @@ class FakeClaude:
         out = kw["output_format"].model_validate(self._take(kw))
         return SimpleNamespace(parsed_output=out, usage=self._usage(), model=kw["model"])
 
-    async def create(self, **kw):
-        text_ = self._take(kw)
+    def _final(self, reply, model):
+        text_, stop = (
+            (reply["text"], reply["stop_reason"])
+            if isinstance(reply, dict)
+            else (reply, "end_turn")
+        )
         return SimpleNamespace(
             content=[SimpleNamespace(type="text", text=text_)],
             usage=self._usage(),
-            model=kw["model"],
-            stop_reason="end_turn",
+            model=model,
+            stop_reason=stop,
         )
+
+    async def create(self, **kw):
+        return self._final(self._take(kw), kw["model"])
 
     def tool_runner(self, **kw):
         steps = self._take(kw)
@@ -186,12 +196,7 @@ class FakeClaude:
                         stop_reason="tool_use",
                     )
                 else:
-                    yield SimpleNamespace(
-                        content=[SimpleNamespace(type="text", text=step)],
-                        usage=self._usage(),
-                        model=kw["model"],
-                        stop_reason="end_turn",
-                    )
+                    yield self._final(step, kw["model"])
 
         return run()
 
