@@ -58,5 +58,7 @@ systemctl daemon-reload && systemctl enable -q fluentpet-boot.service
 aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 docker compose pull -q
 docker compose up -d --remove-orphans
+# Caddy reads the Caddyfile once; a rewritten HOST (IP changed, Elastic IP attached) needs a reload
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
 docker image prune -f >/dev/null
 echo "API: https://$HOST"
