@@ -631,3 +631,22 @@ class WebhookLogOut(Out):
     status_code: int | None
     requested_at: datetime
     responded_at: datetime | None
+
+
+# ---- ai ----------------------------------------------------------------------
+
+
+class LogTextIn(BaseModel):
+    text: Annotated[str, Field(min_length=1, max_length=1000)]
+
+    @model_validator(mode="after")
+    def _trim(self):
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("text is blank")
+        return self
+
+
+class LogTextOut(BaseModel):
+    draft: InteractionIn
+    unmatched_words: list[str]

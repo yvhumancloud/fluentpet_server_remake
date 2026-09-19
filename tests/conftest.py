@@ -1,9 +1,11 @@
 import os
+from types import SimpleNamespace
 
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+asyncpg://fluentpet:fluentpet@localhost:5432/fluentpet_test"
 )
 os.environ["DEVICE_API_KEY"] = "test-device-key"
+os.environ["ANTHROPIC_API_KEY"] = "test-anthropic-key"
 
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
@@ -121,4 +123,52 @@ class FakeWebhooks:
 def webhooks(monkeypatch):
     fake = FakeWebhooks()
     monkeypatch.setattr("app.services.webhooks.get", fake)
+    return fake
+
+
+class FakeClaude:
+    """Stands in for AsyncAnthropic. Queue model output with `.reply(...)`; calls are recorded.
+
+    A reply is the structured object for `messages.parse`, or the text for `messages.create`.
+    `error` makes the next call raise it (any anthropic.APIError subclass).
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.replies: list = []
+        self.error: Exception | None = None
+        self.messages = self  # client.messages.parse / client.messages.create
+
+    def reply(self, value):
+        self.replies.append(value)
+        return self
+
+    def _take(self, kw):
+        self.calls.append(kw)
+        if self.error:
+            raise self.error
+        return self.replies.pop(0)
+
+    @staticmethod
+    def _usage():
+        return SimpleNamespace(input_tokens=100, output_tokens=20, cache_read_input_tokens=0)
+
+    async def parse(self, **kw):
+        out = kw["output_format"].model_validate(self._take(kw))
+        return SimpleNamespace(parsed_output=out, usage=self._usage(), model=kw["model"])
+
+    async def create(self, **kw):
+        text_ = self._take(kw)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=text_)],
+            usage=self._usage(),
+            model=kw["model"],
+            stop_reason="end_turn",
+        )
+
+
+@pytest.fixture(autouse=True)
+def claude(monkeypatch):
+    fake = FakeClaude()
+    monkeypatch.setattr("app.services.ai.client", lambda: fake)
     return fake

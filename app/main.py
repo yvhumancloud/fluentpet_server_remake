@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException
 
 from app.errors import ApiError
 from app.routers import (
+    ai,
     audios,
     bases,
     buttons,
@@ -56,6 +57,7 @@ for r in (
     stats,
     device,
     jobs,
+    ai,
 ):
     app.include_router(r.router, prefix="/api/v1")
 

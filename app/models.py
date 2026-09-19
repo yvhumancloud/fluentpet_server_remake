@@ -384,3 +384,23 @@ class PushLog(Base):
     key: Mapped[str] = mapped_column(String(32))
     sent_at: Mapped[datetime] = mapped_column(server_default=NOW)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class AiLog(Base):
+    """One row per successful model call: rate limiting and the spend meter."""
+
+    __tablename__ = "ai_log"
+    __table_args__ = (
+        Index("ix_ai_log_user_rate", "user_id", "kind", "created_at"),
+        Index("ix_ai_log_household_rate", "household_id", "kind", "created_at"),
+    )
+    id: Mapped[int] = pk()
+    user_id: Mapped[int | None] = fk("users.id", ondelete="SET NULL", nullable=True)
+    household_id: Mapped[int | None] = fk("households.id", ondelete="SET NULL", nullable=True)
+    kind: Mapped[str] = mapped_column(String(16))  # chat | log_text | digest
+    model: Mapped[str] = mapped_column(String(64))
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(server_default=NOW)

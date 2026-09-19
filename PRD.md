@@ -334,7 +334,7 @@ Client settings: `timeout=30`, `max_retries=1` (worst case 60 s wall clock). Pro
 
 One table.
 
-- **ai_log** — `id`, `user_id` (null for the digest), `household_id`, `kind` (`chat` | `log_text` | `digest`), `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `latency_ms`, `error`, `created_at`. Index on (`user_id`, `kind`, `created_at`) for rate limiting and on (`household_id`, `kind`, `created_at`) for the digest. One row per model call, including failures. This is also the spend meter: `sum(tokens) by model, month`.
+- **ai_log** — `id`, `user_id` (null for the digest), `household_id`, `kind` (`chat` | `log_text` | `digest`), `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `latency_ms`, `created_at`. Index on (`user_id`, `kind`, `created_at`) for rate limiting and on (`household_id`, `kind`, `created_at`) for the digest. One row per successful model call, written in the request transaction; a failed call is a 503 that rolls the request back, so failures are logged (and go to Sentry), not stored. This is also the spend meter: `sum(tokens) by model, month`.
 
 No chat history table: the app sends the thread back on every turn (the Messages API is stateless anyway). No stored drafts: log-by-text returns a draft the app posts through the existing `POST /interactions`.
 
@@ -363,7 +363,7 @@ Loop: `client.beta.messages.tool_runner`, at most 5 tool rounds, `max_tokens` 1,
 
 ### 12.5 Log by text
 
-Input: free text such as *"Rex pressed outside then play, we went to the park around 8"*. Prompt: pushers, buttons, contexts (ids and text), now in the user's timezone. Output through structured outputs (`messages.parse` against the draft schema, `strict`), so the response always validates. The server then drops any id that is not in the household's lists and moves the word to `unmatched_words`; the app offers "create button" for those. `occurred_at` null means now; relative phrases ("this morning", "around 8") resolve against the user's timezone. Nothing is written.
+Input: free text such as *"Rex pressed outside then play, we went to the park around 8"*. Prompt: pushers, buttons, contexts (ids and text), now in the user's timezone. Output through structured outputs (`messages.parse` against the draft schema, `strict`), so the response always validates. The server then drops any id that is not in the household's lists (a hallucinated id has no word to report); `unmatched_words` comes from the model and the app offers "create button" for those. A time without an offset is read on the user's clock; no time means now. `occurred_at` null means now; relative phrases ("this morning", "around 8") resolve against the user's timezone. Nothing is written.
 
 ### 12.6 Weekly digest
 
@@ -386,7 +386,7 @@ At 100 active households, 20 % using chat 10 turns a week, every household getti
 - **Security.** Tools never accept ids from the model that are not checked against the household through the existing `get_pusher`-style loaders. Model output is never executed or written directly; log-by-text produces a draft, the digest text is stored as-is in a note. Prompt content the user controls (chat text, note text) is treated as data.
 - **Privacy.** Pusher names, button texts, notes and timestamps are sent to Anthropic's API under its commercial terms (not used for training by default; verify the current policy before launch). No emails or Firebase ids leave. The app shows a one-time consent screen before the first AI call and records it client-side; the Play Store privacy policy gets one line naming the processor.
 - **Concurrency.** An AI request holds its pooled DB connection, idle in transaction, for the length of the model call (5–10 s). With `pool_size=5` this caps concurrent AI requests at about 4 before other requests queue. Accepted for launch; the upgrade path is tools opening their own `SessionLocal()` and the endpoint releasing the request session before the model call.
-- **Observability.** Every call writes `ai_log`; request log line unchanged; Anthropic `request_id` logged on error.
+- **Observability.** Every successful call writes `ai_log`; failures are a warning log line with the SDK error class; request log line unchanged.
 - **Testing.** The Anthropic client is faked at its boundary in `tests/conftest.py` (`claude` fixture) like `fcm` and `s3`; endpoint tests cover the happy path, the 429, the blank-key 503, id validation in log-by-text, and once-per-week for the digest. The two tool functions get one direct test each proving household scoping. No live API calls in CI.
 
 ### 12.9 Milestones

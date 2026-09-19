@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     device_api_key: str = ""
     job_api_key: str = ""  # X-Job-Key for /internal/* (triggered by hand)
     sentry_dsn: str = ""
+    anthropic_api_key: str = ""  # blank = every /ai/* endpoint answers 503 ai_unavailable
+    ai_model: str = "claude-opus-5"
     # "token:email[:name],..." — bearer tokens that stand in for Firebase in dev/e2e. Never prod.
     dev_tokens: str = ""
 
