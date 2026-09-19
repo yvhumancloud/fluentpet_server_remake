@@ -1,6 +1,6 @@
 # FluentPet API Remake — Product Requirements
 
-Version 1.0 · 2026-09-16 · Owner: Yogesh Vitekar
+Version 1.1 · 2026-09-19 (§12 AI features added) · Owner: Yogesh Vitekar
 
 ## 1. Summary
 
@@ -314,3 +314,91 @@ Each milestone ends with endpoint tests green and a deploy to `dev`.
 2. Does the device script need raw base logs stored, or are typed events enough? The PRD assumes typed events only; `device_events.payload` can carry the raw line if wanted.
 3. Should the 183-day cap on stats stay, or is the new app fine with a 90-day cap for cheaper queries?
 4. Confirm the Play Store account-deletion flow: in-app `DELETE /me` is sufficient, but a web URL for deletion requests is also required by policy and would be a static page, not an API concern.
+
+## 12. AI features
+
+Added 2026-09-19. Three features, each one call to the Claude API made from inside a request handler or the job command. Same shape as the rest of the service: no queue, no worker, no new hosting. **Not MCP** (the model call runs in-process, next to the DB; tools are Python functions) and **not RAG** (a household's data is structured and small; the model fetches it through tools, not embeddings).
+
+### 12.1 Stack additions
+
+| Layer | Choice | Version |
+|---|---|---|
+| Model client | `anthropic` Python SDK, `AsyncAnthropic`, beta tool runner | 1.7.0 (2026-09-18) |
+| Model | `claude-opus-5`; env `AI_MODEL` overrides (model is the main cost lever, see 12.7) | — |
+
+New environment variables: `ANTHROPIC_API_KEY` (blank = every AI endpoint answers 503 `ai_unavailable`, the app must work fully without it), `AI_MODEL` (default `claude-opus-5`). Stored in SSM like the other secrets.
+
+Client settings: `timeout=30`, `max_retries=1` (worst case 60 s wall clock). Prompt caching on the system block. Adaptive thinking (the model default), `effort: low` for chat and log-by-text, `medium` for the digest.
+
+### 12.2 Data model
+
+One table.
+
+- **ai_log** — `id`, `user_id` (null for the digest), `household_id`, `kind` (`chat` | `log_text` | `digest`), `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `latency_ms`, `error`, `created_at`. Index on (`user_id`, `kind`, `created_at`) for rate limiting and on (`household_id`, `kind`, `created_at`) for the digest. One row per model call, including failures. This is also the spend meter: `sum(tokens) by model, month`.
+
+No chat history table: the app sends the thread back on every turn (the Messages API is stateless anyway). No stored drafts: log-by-text returns a draft the app posts through the existing `POST /interactions`.
+
+### 12.3 API
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/ai/chat` | Body `{ messages: [{ role: user \| assistant, content }] }`, ≤ 20 messages, last one `user`, each ≤ 2,000 chars. Returns `{ reply, remaining_today }`. 429 `rate_limited` after 30 turns per user per rolling 24 h |
+| POST | `/ai/log-text` | Body `{ text }` ≤ 1,000 chars. Returns `{ draft: { pusher_id, button_ids[], context_ids[], occurred_at, note }, unmatched_words[] }`. Draft only: the app shows it, the user confirms, the app calls `POST /interactions`. 429 after 50 per user per 24 h |
+| POST | `/internal/weekly-digest` | `X-Job-Key`. Triggered by hand like `base_offline`. Returns `{ households: n, sent: n, skipped: n }` |
+
+Errors: 503 `ai_unavailable` for any Anthropic error, timeout, or blank key (logged to Sentry); 422 for body validation as everywhere else. Household scoping comes from the token: tools receive the authenticated `user`, never ids from the model.
+
+### 12.4 Chat
+
+System prompt (cached): today's date in the user's timezone, the household's pushers (id, name, human/learner, type), the non-hidden button vocabulary (id, text), the contexts, and rules: answer only from tool results, never invent presses, keep replies under 120 words, reply in the user's language, say so when a question is outside the data.
+
+Tools (`@beta_async_tool`, wrapping existing functions; the model sees names and docstrings only):
+
+| Tool | Wraps | Bounds |
+|---|---|---|
+| `stats_summary(pusher_id, from, to)` | `routers/stats.py::summary` | ≤ 183 days; lists trimmed to top 10 |
+| `search_interactions(pusher_id?, button_ids?, context_ids?, from?, to?, text?, limit)` | `routers/search.py` with `SearchIn` | `limit` ≤ 50, one compact line per row: `09-17 07:42 Rex: OUTSIDE, PLAY [Morning] "note"` |
+
+Loop: `client.beta.messages.tool_runner`, at most 5 tool rounds, `max_tokens` 1,024 for the reply. "Summarise the last few days" is one `stats_summary` call; "when does Rex ask for outside at night" is one `search_interactions` call. A reply that arrives without tool use is fine (greetings, clarifications).
+
+### 12.5 Log by text
+
+Input: free text such as *"Rex pressed outside then play, we went to the park around 8"*. Prompt: pushers, buttons, contexts (ids and text), now in the user's timezone. Output through structured outputs (`messages.parse` against the draft schema, `strict`), so the response always validates. The server then drops any id that is not in the household's lists and moves the word to `unmatched_words`; the app offers "create button" for those. `occurred_at` null means now; relative phrases ("this morning", "around 8") resolve against the user's timezone. Nothing is written.
+
+### 12.6 Weekly digest
+
+For each household with ≥ 1 non-deleted interaction in the last 7 days and no `ai_log` row of kind `digest` in the last 6 days: build the week's `stats_summary` per non-hidden learner plus the previous week's for comparison, one model call, ≤ 3 sentences (*"Rex said OUTSIDE 12 times this week, mostly 7–8 am, up from 5. New word: LOVE, first pressed Tuesday."*). Deliver as a push `weekly_digest` to all members (new key, no rate limit beyond once per household per week, ignores `push_frequency` because it is not a press) and as a note (`created_by_user_id` null, text prefixed `Weekly digest — `) so it lives in the feed. Households without learners or with fewer than 3 interactions get no digest.
+
+### 12.7 Cost
+
+Per-call estimates at list prices, cached system prompt, `effort: low`:
+
+| Call | Tokens in / out | Opus 5 | Sonnet 5 | Haiku 4.5 |
+|---|---|---|---|---|
+| Chat turn (one tool round) | ~6.5k / 300 | $0.04 | $0.016 | $0.008 |
+| Log by text | ~1.5k / 100 | $0.01 | $0.004 | $0.002 |
+| Digest, per household | ~2k / 150 | $0.014 | $0.006 | $0.003 |
+
+At 100 active households, 20 % using chat 10 turns a week, every household getting a digest: Opus ≈ $38 / month, Sonnet ≈ $15, Haiku ≈ $7. **This sits on top of the $5 infrastructure target and scales with users; the model choice and the per-user caps are the controls.** `AI_MODEL` switches without a code change. Decision on the launch model is open (12.9).
+
+### 12.8 Non-functional
+
+- **Security.** Tools never accept ids from the model that are not checked against the household through the existing `get_pusher`-style loaders. Model output is never executed or written directly; log-by-text produces a draft, the digest text is stored as-is in a note. Prompt content the user controls (chat text, note text) is treated as data.
+- **Privacy.** Pusher names, button texts, notes and timestamps are sent to Anthropic's API under its commercial terms (not used for training by default; verify the current policy before launch). No emails or Firebase ids leave. The app shows a one-time consent screen before the first AI call and records it client-side; the Play Store privacy policy gets one line naming the processor.
+- **Concurrency.** An AI request holds its pooled DB connection, idle in transaction, for the length of the model call (5–10 s). With `pool_size=5` this caps concurrent AI requests at about 4 before other requests queue. Accepted for launch; the upgrade path is tools opening their own `SessionLocal()` and the endpoint releasing the request session before the model call.
+- **Observability.** Every call writes `ai_log`; request log line unchanged; Anthropic `request_id` logged on error.
+- **Testing.** The Anthropic client is faked at its boundary in `tests/conftest.py` (`claude` fixture) like `fcm` and `s3`; endpoint tests cover the happy path, the 429, the blank-key 503, id validation in log-by-text, and once-per-week for the digest. The two tool functions get one direct test each proving household scoping. No live API calls in CI.
+
+### 12.9 Milestones
+
+| # | Deliverable | Scope |
+|---|---|---|
+| 7 | AI foundation + log by text | SDK, settings, `ai_log` migration, client fake, `/ai/log-text`, rate limit |
+| 8 | Chat | `/ai/chat`, the two tools, prompt caching, tool-round cap |
+| 9 | Digest | `/internal/weekly-digest`, push key `weekly_digest`, digest note |
+
+Open before milestone 7: launch model (`claude-opus-5` unless changed), whether the digest is weekly or daily (daily is 7× the cost).
+
+### 12.10 Backlog (not in scope)
+
+Explain-this-interaction, next-button suggestion, auto `button_concept_id` on create, natural-language search → `SearchFilters`, streaming replies, stored chat threads, per-user AI gating. MCP and RAG stay out for the reasons above; revisit MCP only if an external client (Claude Desktop, a third-party agent) needs the data, RAG only if free-text notes outgrow tools — and then Postgres FTS before pgvector.
