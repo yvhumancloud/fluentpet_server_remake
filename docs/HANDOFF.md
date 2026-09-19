@@ -1,7 +1,7 @@
 # FluentPet API — handoff
 
 Status on 2026-09-19: milestones 1–9 of the PRD are built, tested (111 endpoint tests,
-`uv run pytest`) and **live in prod**: `https://47-130-5-81.sslip.io` (one EC2 `t3.micro` in
+`uv run pytest`) and **live in prod**: `https://18-138-35-207.sslip.io` (one EC2 `t3.micro` in
 `ap-southeast-1`, Neon, R2, Firebase; `docs/AWS_SETUP.md` is what was actually done). Every push to
 `main` migrates Neon and redeploys the box; `scripts/smoke.sh <url> .env.prod` is the acceptance
 check (9/9 on the first deploy). The URL changes if the instance is stopped/started (no Elastic IP yet).

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Smoke test a deployed API (docs/AWS_SETUP.md §8). Keys come from an env file, default .env:
-#     scripts/smoke.sh https://47-130-5-81.sslip.io              # DEVICE_API_KEY / JOB_API_KEY from .env
-#     scripts/smoke.sh https://47-130-5-81.sslip.io .env.prod    # or from another file (.env* is gitignored)
+#     scripts/smoke.sh https://18-138-35-207.sslip.io              # DEVICE_API_KEY / JOB_API_KEY from .env
+#     scripts/smoke.sh https://18-138-35-207.sslip.io .env.prod    # or from another file (.env* is gitignored)
 set -u
 URL=${1:?usage: scripts/smoke.sh https://host [envfile]}; URL=${URL%/}
 ENVF=${2:-.env}
