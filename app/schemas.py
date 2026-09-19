@@ -638,6 +638,7 @@ class WebhookLogOut(Out):
 
 class LogTextIn(BaseModel):
     text: Annotated[str, Field(min_length=1, max_length=1000)]
+    device_timezone: Timezone | None = None  # the clock "around 12" is read on; else the profile's
 
     @model_validator(mode="after")
     def _trim(self):

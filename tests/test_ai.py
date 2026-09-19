@@ -344,3 +344,24 @@ async def test_blank_or_truncated_answers_are_failures(client, as_user, claude, 
     claude.reply('{"pusher_id": 1, "button_ids": [1')  # cut mid-JSON
     r = await client.post(f"{API}/ai/log-text", json={"text": "x"})
     assert r.status_code == 503 and r.json()["error"]["code"] == "ai_unavailable"
+
+
+async def test_log_text_device_timezone_beats_the_profile(client, as_user, claude):
+    rex, outside, _ = await setup_household(client, as_user)  # profile: Europe/Paris
+    claude.reply(
+        {**DRAFT, "pusher_id": rex, "button_ids": [outside], "occurred_at": "2026-09-19T12:00"}
+    )
+    r = await client.post(
+        f"{API}/ai/log-text",
+        json={"text": "Rex pressed outside around 12", "device_timezone": "Asia/Kolkata"},
+    )
+    assert r.status_code == 200, r.text
+    draft = r.json()["draft"]
+    assert draft["occurred_at"] == "2026-09-19T06:30:00Z"  # 12:00 IST, not 12:00 Paris
+    assert draft["device_timezone"] == "Asia/Kolkata"
+    assert "(Asia/Kolkata)" in claude.calls[0]["system"]  # the model resolved "12" on that clock
+
+    r = await client.post(
+        f"{API}/ai/log-text", json={"text": "x", "device_timezone": "Mars/Olympus"}
+    )
+    assert r.status_code == 422

@@ -50,7 +50,7 @@ same against the local DB.
 ## AI (PRD §12)
 
 `ANTHROPIC_API_KEY` in `.env` turns on `POST /ai/chat` (one turn, Claude calls the stats/search
-functions as tools), `POST /ai/log-text` (free text → draft interaction; the app posts it) and the
+functions as tools), `POST /ai/log-text` (free text + `device_timezone` → draft interaction; the app posts it) and the
 weekly digest job. No key = those answer 503 `ai_unavailable`. `AI_MODEL` picks the model
 (default `claude-opus-5`); every call lands in `ai_log`, which is also the rate limiter (30 chat /
 50 log-text per user per day) and the spend meter. Any Messages-API-compatible gateway works too:

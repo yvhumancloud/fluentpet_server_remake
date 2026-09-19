@@ -116,9 +116,9 @@ class Vocabulary(BaseModel):
         )
 
 
-def now_line(user: User) -> str:
-    now = datetime.now(ZoneInfo(user.timezone))
-    return f"Now: {now.isoformat(timespec='minutes')} ({user.timezone})."
+def now_line(tz: str) -> str:
+    now = datetime.now(ZoneInfo(tz))
+    return f"Now: {now.isoformat(timespec='minutes')} ({tz})."
 
 
 async def vocabulary(session: AsyncSession, user: User) -> Vocabulary:
@@ -154,7 +154,8 @@ unclear.
 - context_ids: only contexts the text clearly states.
 - occurred_at: ISO 8601 with offset, resolved against Now and the timezone ("this morning", \
 "at 8", "yesterday"). Null when the text gives no time.
-- note: anything else worth keeping, in the user's words. Null if nothing.
+- note: anything else worth keeping, in the user's words — not the who, the buttons or the time, \
+those are already captured. Null if nothing.
 """
 
 
@@ -176,9 +177,12 @@ def parse_json_text(response, model: type[BaseModel]) -> BaseModel:
         raise AiUnavailable("AI gave no usable answer, try again") from e
 
 
-async def log_text(session: AsyncSession, user: User, text: str) -> tuple[InteractionIn, list[str]]:
+async def log_text(
+    session: AsyncSession, user: User, text: str, tz: str
+) -> tuple[InteractionIn, list[str]]:
+    """`tz` is the clock the text's times are read on: the device's when the app sends it."""
     vocab = await vocabulary(session, user)
-    system = f"{LOG_TEXT_SYSTEM}{vocab.prompt(user)}\n{now_line(user)}"
+    system = f"{LOG_TEXT_SYSTEM}{vocab.prompt(user)}\n{now_line(tz)}"
     if settings.ai_is_claude:
         request = lambda c: c.messages.parse(  # noqa: E731
             model=settings.ai_model,
@@ -208,13 +212,13 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
         occurred_at = datetime.fromisoformat(d.occurred_at or "")
     except ValueError:
         occurred_at = datetime.now(UTC)
-    if occurred_at.tzinfo is None:  # the model dropped the offset: it meant the user's clock
-        occurred_at = occurred_at.replace(tzinfo=ZoneInfo(user.timezone))
+    if occurred_at.tzinfo is None:  # the model dropped the offset: it meant that clock
+        occurred_at = occurred_at.replace(tzinfo=ZoneInfo(tz))
     draft = InteractionIn(
         pusher_id=d.pusher_id if d.pusher_id in vocab.pushers else None,
         note=d.note,
         occurred_at=occurred_at.astimezone(UTC),
-        device_timezone=user.timezone,
+        device_timezone=tz,
         button_ids=[b for b in d.button_ids if b in vocab.buttons],
         context_ids=[c for c in d.context_ids if c in vocab.contexts],
     )
@@ -340,7 +344,7 @@ def chat_tools(session: AsyncSession, user: User):
 
 async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
     vocab = await vocabulary(session, user)
-    stable, clock = CHAT_SYSTEM + vocab.prompt(user), now_line(user)
+    stable, clock = CHAT_SYSTEM + vocab.prompt(user), now_line(user.timezone)
     if settings.ai_is_claude:  # the stable block is cached across turns; the clock is not
         extra = {
             "system": [

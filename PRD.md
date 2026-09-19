@@ -343,7 +343,7 @@ No chat history table: the app sends the thread back on every turn (the Messages
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/ai/chat` | Body `{ messages: [{ role: user \| assistant, content }] }`, ≤ 20 messages, last one `user`, each ≤ 2,000 chars. Returns `{ reply, remaining_today }`. 429 `rate_limited` after 30 turns per user per rolling 24 h |
-| POST | `/ai/log-text` | Body `{ text }` ≤ 1,000 chars. Returns `{ draft: { pusher_id, button_ids[], context_ids[], occurred_at, note }, unmatched_words[] }`. Draft only: the app shows it, the user confirms, the app calls `POST /interactions`. 429 after 50 per user per 24 h |
+| POST | `/ai/log-text` | Body `{ text, device_timezone? }` (text ≤ 1,000 chars; times in the text are read on `device_timezone`, else the profile's). Returns `{ draft: { pusher_id, button_ids[], context_ids[], occurred_at, note }, unmatched_words[] }`. Draft only: the app shows it, the user confirms, the app calls `POST /interactions`. 429 after 50 per user per 24 h |
 | POST | `/internal/weekly-digest` | `X-Job-Key`. Triggered by hand like `base_offline`. Returns `{ sent: n, skipped: n }` (skipped = candidates with no learner data or a failed model call, retried next run) |
 
 Errors: 503 `ai_unavailable` for any Anthropic error, timeout, or blank key (logged to Sentry); 422 for body validation as everywhere else. Household scoping comes from the token: tools receive the authenticated `user`, never ids from the model.
@@ -363,7 +363,7 @@ Loop: `client.beta.messages.tool_runner`, at most 5 tool rounds, `max_tokens` 1,
 
 ### 12.5 Log by text
 
-Input: free text such as *"Rex pressed outside then play, we went to the park around 8"*. Prompt: pushers, buttons, contexts (ids and text), now in the user's timezone. Output through structured outputs (`messages.parse` against the draft schema, `strict`), so the response always validates. The server then drops any id that is not in the household's lists (a hallucinated id has no word to report); `unmatched_words` comes from the model and the app offers "create button" for those. A time without an offset is read on the user's clock; no time means now. `occurred_at` null means now; relative phrases ("this morning", "around 8") resolve against the user's timezone. Nothing is written.
+Input: free text such as *"Rex pressed outside then play, we went to the park around 8"*. Prompt: pushers, buttons, contexts (ids and text), now in the user's timezone. Output through structured outputs (`messages.parse` against the draft schema, `strict`), so the response always validates. The server then drops any id that is not in the household's lists (a hallucinated id has no word to report); `unmatched_words` comes from the model and the app offers "create button" for those. A time without an offset is read on the user's clock; no time means now. `occurred_at` null means now; relative phrases ("this morning", "around 8") resolve against `device_timezone` when the app sends it, else the profile timezone — so the app should send it, and set the profile timezone on sign-in either way. Nothing is written.
 
 ### 12.6 Weekly digest
 
