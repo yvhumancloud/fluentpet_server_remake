@@ -236,3 +236,61 @@ async def test_chat_validates_the_thread_and_limits_30_a_day(client, as_user, cl
         assert r.status_code == 200 and r.json()["remaining_today"] == 29 - n
     r = await client.post(f"{API}/ai/chat", json={"messages": bad[:1]})
     assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"
+
+
+# ---- weekly digest -------------------------------------------------------------
+
+JOB = {"X-Job-Key": "job-secret"}
+
+
+async def test_weekly_digest_once_per_household_per_week(client, as_user, claude, fcm, monkeypatch):
+    monkeypatch.setattr("app.auth.settings.job_api_key", "job-secret")
+    rex, outside, play = await setup_household(client, as_user)
+    await client.put(f"{API}/push-tokens", json={"token": "ann-phone"})
+    for d in (0, 1, 2):
+        await log(client, rex, [outside], day(d, 8))
+    await log(client, rex, [play], day(9, 8))  # last week
+    as_user("dan", "dan@example.com", name="Dan")  # nothing logged: no digest
+    await client.put(f"{API}/push-tokens", json={"token": "dan-phone"})
+    fcm.sent.clear()
+    claude.reply("Rex said OUTSIDE 3 times this week, mostly around 8 am.")
+
+    r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
+    assert r.status_code == 200 and r.json() == {"sent": 1, "skipped": 0}
+    assert fcm.keys("ann-phone") == ["weekly_digest"] and fcm.keys("dan-phone") == []
+    assert fcm.sent[0]["body"] == "Rex said OUTSIDE 3 times this week, mostly around 8 am."
+    prompt = claude.calls[0]["messages"][0]["content"]
+    assert '"Rex"' in prompt and '"text":"Outside","count":3' in prompt.replace(" ", "")
+    assert '"text":"Play","count":1' in prompt.replace(" ", "")  # last week, for comparison
+
+    as_user("ann", "ann@example.com", name="Ann")
+    r = await client.post(f"{API}/interactions/search", json={"filters": {"notes": "only"}})
+    assert [n["text"] for n in r.json()["items"]] == [
+        "Weekly digest — Rex said OUTSIDE 3 times this week, mostly around 8 am."
+    ]
+
+    r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
+    assert r.json() == {"sent": 0, "skipped": 0} and len(claude.calls) == 1
+
+
+async def test_weekly_digest_skips_a_household_when_claude_fails(
+    client, as_user, claude, fcm, monkeypatch
+):
+    import anthropic
+
+    monkeypatch.setattr("app.auth.settings.job_api_key", "job-secret")
+    rex, outside, _ = await setup_household(client, as_user)
+    for d in (0, 1, 2):
+        await log(client, rex, [outside], day(d, 8))
+    claude.error = anthropic.APIConnectionError(request=None)
+
+    r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
+    assert r.status_code == 200 and r.json() == {"sent": 0, "skipped": 1}
+    assert fcm.sent == []
+    r = await client.post(f"{API}/interactions/search", json={"filters": {"notes": "only"}})
+    assert r.json()["items"] == []
+
+    claude.error = None  # next run retries it
+    claude.reply("Rex said OUTSIDE 3 times.")
+    r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
+    assert r.json() == {"sent": 1, "skipped": 0}

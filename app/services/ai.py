@@ -1,5 +1,6 @@
 """Claude calls: vocabulary prompt, rate limit, ai_log. `client()` is the boundary tests replace."""
 
+import json
 import logging
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError
 from app.models import AiLog, Button, Context, Pusher, User
-from app.schemas import InteractionIn, SearchFilters, SearchIn
+from app.schemas import InteractionIn, SearchFilters, SearchIn, StatsSummaryOut
 from app.settings import settings
 
 log = logging.getLogger("fluentpet.ai")
@@ -34,7 +35,9 @@ class RateLimited(ApiError):
 
 @cache
 def client() -> anthropic.AsyncAnthropic:
-    return anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=30, max_retries=1)
+    return anthropic.AsyncAnthropic(
+        api_key=settings.anthropic_api_key.strip(), timeout=30, max_retries=1
+    )
 
 
 async def check_limit(session: AsyncSession, user: User, kind: str) -> int:
@@ -51,11 +54,13 @@ async def check_limit(session: AsyncSession, user: User, kind: str) -> int:
     return DAILY_LIMIT[kind] - used - 1
 
 
-async def call(session: AsyncSession, user: User, kind: str, request):
+async def call(
+    session: AsyncSession, kind: str, request, *, household_id: int, user_id: int | None = None
+):
     """Runs `request(client)` (one response, or the list of turns a tool runner produced) and
-    writes one ai_log row for the successful call, in the request transaction. A failure is a
+    writes one ai_log row for the successful call, in the caller's transaction. A failure is a
     503 that rolls the request back, so it is only logged. Returns the last response."""
-    if not settings.anthropic_api_key:
+    if not settings.anthropic_api_key.strip():  # SSM cannot store an empty value; blank = off
         raise AiUnavailable("AI is not configured")
     started = time.perf_counter()
     try:
@@ -67,8 +72,8 @@ async def call(session: AsyncSession, user: User, kind: str, request):
         responses = [responses]
     session.add(
         AiLog(
-            user_id=user.id,
-            household_id=user.household_id,
+            user_id=user_id,
+            household_id=household_id,
             kind=kind,
             model=responses[-1].model,
             input_tokens=sum(r.usage.input_tokens for r in responses),
@@ -159,7 +164,6 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
     vocab = await vocabulary(session, user)
     response = await call(
         session,
-        user,
         "log_text",
         lambda c: c.messages.parse(
             model=settings.ai_model,
@@ -169,6 +173,8 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
             output_format=LogTextDraft,
             output_config={"effort": "low"},
         ),
+        household_id=user.household_id,
+        user_id=user.id,
     )
     d: LogTextDraft = response.parsed_output
     try:
@@ -205,6 +211,18 @@ CHAT_MAX_TOOL_ROUNDS = 5
 SEARCH_LIMIT = 50
 
 
+def trim_stats(out: StatsSummaryOut) -> StatsSummaryOut:
+    """Ranked lists cut to 10: enough for an answer, small enough for a prompt."""
+    r = out.range
+    for name in ("buttons_logged", "buttons_created", "combinations", "contexts"):
+        setattr(r, name, getattr(r, name)[:10])
+    return out
+
+
+def text_of(response) -> str:
+    return "".join(b.text for b in response.content if b.type == "text").strip()
+
+
 def chat_tools(session: AsyncSession, user: User):
     """The two tools, closed over the caller: household scoping is the same as the endpoints'."""
     from app.routers.search import search
@@ -226,10 +244,7 @@ def chat_tools(session: AsyncSession, user: User):
             )
         except (ApiError, ValueError) as e:
             return f"error: {getattr(e, 'message', e)}"
-        r = out.range
-        for name in ("buttons_logged", "buttons_created", "combinations", "contexts"):
-            setattr(r, name, getattr(r, name)[:10])
-        return out.model_dump_json(exclude={"pusher": {"avatar_url"}})
+        return trim_stats(out).model_dump_json(exclude={"pusher": {"avatar_url"}})
 
     @beta_async_tool
     async def search_interactions(
@@ -314,5 +329,30 @@ async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
         )
         return [m async for m in runner]
 
-    final = await call(session, user, "chat", run)
-    return "".join(b.text for b in final.content if b.type == "text").strip()
+    final = await call(session, "chat", run, household_id=user.household_id, user_id=user.id)
+    return text_of(final)
+
+
+# ---- weekly digest -------------------------------------------------------------
+
+DIGEST_SYSTEM = """Write the weekly digest for a FluentPet household: what each learner (pet) said \
+with their sound buttons this week, compared with last week. At most 3 sentences, plain text, \
+warm but factual. Name the learner, give the top button with its count, the usual time of day if \
+the per-hour data shows one, one change versus last week, and any button first pressed this week \
+(buttons_created). Only state what is in the data."""
+
+
+async def digest(session: AsyncSession, user: User, learners_stats: list[dict]) -> str:
+    response = await call(
+        session,
+        "digest",
+        lambda c: c.messages.create(
+            model=settings.ai_model,
+            max_tokens=1024,
+            system=DIGEST_SYSTEM,
+            messages=[{"role": "user", "content": json.dumps(learners_stats)}],
+            output_config={"effort": "medium"},
+        ),
+        household_id=user.household_id,
+    )
+    return text_of(response)

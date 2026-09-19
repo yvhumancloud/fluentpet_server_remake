@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from app.auth import require_job_key
-from app.jobs import base_offline
+from app.jobs import base_offline, weekly_digest
 
 router = APIRouter(
     prefix="/internal",
@@ -16,3 +16,8 @@ router = APIRouter(
 @router.post("/base-offline")
 async def run_base_offline() -> dict[str, int]:
     return {"pushed": await base_offline.run()}
+
+
+@router.post("/weekly-digest")
+async def run_weekly_digest() -> dict[str, int]:
+    return await weekly_digest.run()

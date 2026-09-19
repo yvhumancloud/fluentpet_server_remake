@@ -128,6 +128,7 @@ Type **SecureString**, KMS key `alias/aws/ssm` (default):
 | `/fluentpet/prod/DEVICE_API_KEY` | random: `openssl rand -hex 32` — the device script will need it |
 | `/fluentpet/prod/JOB_API_KEY` | random: `openssl rand -hex 32` — you send it from your laptop to run the base-offline check (step 7) |
 | `/fluentpet/prod/SENTRY_DSN` | a single space for now (SSM refuses empty values); the app treats blank as off |
+| `/fluentpet/prod/ANTHROPIC_API_KEY` | from console.anthropic.com; omit or a single space = AI endpoints answer 503. Optional `/fluentpet/prod/AI_MODEL` (default `claude-opus-5`) |
 
 ### 4d. EC2 instance role
 

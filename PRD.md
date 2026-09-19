@@ -344,7 +344,7 @@ No chat history table: the app sends the thread back on every turn (the Messages
 |---|---|---|
 | POST | `/ai/chat` | Body `{ messages: [{ role: user \| assistant, content }] }`, ≤ 20 messages, last one `user`, each ≤ 2,000 chars. Returns `{ reply, remaining_today }`. 429 `rate_limited` after 30 turns per user per rolling 24 h |
 | POST | `/ai/log-text` | Body `{ text }` ≤ 1,000 chars. Returns `{ draft: { pusher_id, button_ids[], context_ids[], occurred_at, note }, unmatched_words[] }`. Draft only: the app shows it, the user confirms, the app calls `POST /interactions`. 429 after 50 per user per 24 h |
-| POST | `/internal/weekly-digest` | `X-Job-Key`. Triggered by hand like `base_offline`. Returns `{ households: n, sent: n, skipped: n }` |
+| POST | `/internal/weekly-digest` | `X-Job-Key`. Triggered by hand like `base_offline`. Returns `{ sent: n, skipped: n }` (skipped = candidates with no learner data or a failed model call, retried next run) |
 
 Errors: 503 `ai_unavailable` for any Anthropic error, timeout, or blank key (logged to Sentry); 422 for body validation as everywhere else. Household scoping comes from the token: tools receive the authenticated `user`, never ids from the model.
 
@@ -367,7 +367,7 @@ Input: free text such as *"Rex pressed outside then play, we went to the park ar
 
 ### 12.6 Weekly digest
 
-For each household with ≥ 1 non-deleted interaction in the last 7 days and no `ai_log` row of kind `digest` in the last 6 days: build the week's `stats_summary` per non-hidden learner plus the previous week's for comparison, one model call, ≤ 3 sentences (*"Rex said OUTSIDE 12 times this week, mostly 7–8 am, up from 5. New word: LOVE, first pressed Tuesday."*). Deliver as a push `weekly_digest` to all members (new key, no rate limit beyond once per household per week, ignores `push_frequency` because it is not a press) and as a note (`created_by_user_id` null, text prefixed `Weekly digest — `) so it lives in the feed. Households without learners or with fewer than 3 interactions get no digest.
+For each household with ≥ 3 non-deleted interactions in the last 7 days and no `ai_log` row of kind `digest` in the last 6 days: build the week's `stats_summary` per non-hidden learner (dates on the household admin's clock) plus the previous week's for comparison, one model call, ≤ 3 sentences (*"Rex said OUTSIDE 12 times this week, mostly 7–8 am, up from 5. New word: LOVE, first pressed Tuesday."*). Deliver as a push `weekly_digest` to all members (new key, no rate limit beyond once per household per week, ignores `push_frequency` because it is not a press) and as a note (`created_by_user_id` null, text prefixed `Weekly digest — `) so it lives in the feed. Households without learners get no digest.
 
 ### 12.7 Cost
 

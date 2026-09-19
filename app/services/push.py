@@ -25,6 +25,7 @@ TITLES = {
     "base_battery_low": ("Base battery low", "{base} is at {level}%"),
     "base_fully_charged": ("Base fully charged", "{base} is fully charged"),
     "base_offline": ("Base offline", "{base} has been offline for over a day"),
+    "weekly_digest": ("Weekly digest", "{text}"),
 }
 RATE_LIMITED = {"base_battery_low", "base_fully_charged"}  # 1 per user per 24 h
 

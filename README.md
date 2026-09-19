@@ -42,9 +42,23 @@ One EC2 box (`docker compose`: API + Caddy for HTTPS, see `deploy/ec2.sh`) + Neo
 every PR and, on `main`, runs `alembic upgrade head` against Neon, pushes the image to ECR and runs
 `deploy/ec2.sh` on the box via SSM. Repo variables `AWS_REGION`, `AWS_DEPLOY_ROLE_ARN`; secret `DATABASE_URL`.
 
-The base-offline check is not scheduled anywhere; run it from your laptop:
-`curl -X POST -H "X-Job-Key: $JOB_API_KEY" https://<url>/api/v1/internal/base-offline`
-(`python -m app.jobs.base_offline` does the same against the local DB).
+The base-offline check and the weekly digest are not scheduled anywhere; run them from your laptop:
+`curl -X POST -H "X-Job-Key: $JOB_API_KEY" https://<url>/api/v1/internal/base-offline` (and
+`/internal/weekly-digest` once a week). `python -m app.jobs.base_offline` / `weekly_digest` do the
+same against the local DB.
+
+## AI (PRD §12)
+
+`ANTHROPIC_API_KEY` in `.env` turns on `POST /ai/chat` (one turn, Claude calls the stats/search
+functions as tools), `POST /ai/log-text` (free text → draft interaction; the app posts it) and the
+weekly digest job. Blank key = those answer 503 `ai_unavailable`. `AI_MODEL` picks the model
+(default `claude-opus-5`); every call lands in `ai_log`, which is also the rate limiter (30 chat /
+50 log-text per user per day) and the spend meter.
+
+```sh
+curl -H "Authorization: Bearer ann" -H 'content-type: application/json' localhost:8080/api/v1/ai/chat \
+  -d '{"messages":[{"role":"user","content":"What did Rex say this week?"}]}'
+```
 
 ## Device script
 

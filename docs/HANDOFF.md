@@ -1,6 +1,6 @@
 # FluentPet API — handoff
 
-Status on 2026-09-17: milestones 1–6 of the PRD are built, tested (97 endpoint tests,
+Status on 2026-09-19: milestones 1–9 of the PRD are built, tested (111 endpoint tests,
 `uv run pytest`) and **live in prod**: `https://47-130-5-81.sslip.io` (one EC2 `t3.micro` in
 `ap-southeast-1`, Neon, R2, Firebase; `docs/AWS_SETUP.md` is what was actually done). Every push to
 `main` migrates Neon and redeploys the box; `scripts/smoke.sh <url> .env.prod` is the acceptance
@@ -99,6 +99,31 @@ Rules that are easy to get wrong (all pinned by tests):
 * **Webhooks**: only on new *base* presses; GET, 5 s timeout, 3 attempts, `webhook_logs` row per
   attempt (`GET /buttons/{id}/webhook-logs`). URLs may not point at loopback/private/metadata
   hosts (checked on save and again after DNS resolution).
+
+## AI (milestones 7–9, PRD §12)
+
+`app/services/ai.py` is the whole thing; `app/routers/ai.py` and `app/jobs/weekly_digest.py` are
+thin. `client()` is the boundary `tests/conftest.py::FakeClaude` replaces (it runs the real tool
+functions when a reply names them).
+
+* **`POST /ai/log-text`** → `messages.parse` with a structured-output schema → a draft
+  `InteractionIn`. Ids not in the household are dropped; a naive time is read on the user's
+  clock; no time = now. The app confirms and posts it — the server never writes from AI output.
+* **`POST /ai/chat`** → beta tool runner, ≤ 5 tool rounds, two `@beta_async_tool` closures over
+  (session, user): `stats_summary` = `routers/stats.summary`, `search_interactions` =
+  `routers/search.search` printed one line per row in the user's timezone. Tool errors (bad
+  range, foreign pusher) go back to the model as `error: …`, never as an HTTP error. System
+  block (rules + vocabulary) is cached; the clock is a second, uncached block. Stateless: the
+  app sends the thread back (≤ 20 messages).
+* **`POST /internal/weekly-digest`** (X-Job-Key): households with ≥ 3 interactions in 7 days and
+  no digest in 6 → one `messages.create` per household with this week's + last week's stats per
+  learner → push `weekly_digest` + a note `Weekly digest — …` (created_by_user_id null). A model
+  failure skips the household; it is retried next run.
+* `ai_log` (one row per successful call, in the request transaction) is the rate limiter and the
+  spend meter: `select model, sum(input_tokens), sum(output_tokens) from ai_log group by 1`.
+* Not done on purpose: MCP, RAG, streaming, stored chat threads (PRD §12.10).
+* Ceiling: an AI request holds its pooled connection (of 5) for the model call, ~5–10 s. Fine at
+  launch; if it bites, tools open their own `SessionLocal()` (PRD §12.8).
 
 ## Device script contract
 
