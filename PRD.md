@@ -326,7 +326,7 @@ Added 2026-09-19. Three features, each one call to the Claude API made from insi
 | Model client | `anthropic` Python SDK, `AsyncAnthropic`, beta tool runner | 1.7.0 (2026-09-18) |
 | Model | `claude-opus-5`; env `AI_MODEL` overrides (model is the main cost lever, see 12.7) | — |
 
-New environment variables: `ANTHROPIC_API_KEY` (blank = every AI endpoint answers 503 `ai_unavailable`, the app must work fully without it), `AI_MODEL` (default `claude-opus-5`). Stored in SSM like the other secrets.
+New environment variables: `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (neither = every AI endpoint answers 503 `ai_unavailable`, the app must work fully without it), `ANTHROPIC_BASE_URL` (blank = Anthropic; any Messages-API-compatible gateway such as Token Harbor, whose free tier includes `deepseek-v4.1-flash`), `AI_MODEL` (default `claude-opus-5`). Stored in SSM like the other secrets. Claude-only request extras (effort, structured-output schema, prompt caching) are sent only when the model id starts with `claude`; other models get the schema in the prompt and JSON parsed from the reply.
 
 Client settings: `timeout=30`, `max_retries=1` (worst case 60 s wall clock). Prompt caching on the system block. Adaptive thinking (the model default), `effort: low` for chat and log-by-text, `medium` for the digest.
 

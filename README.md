@@ -51,9 +51,11 @@ same against the local DB.
 
 `ANTHROPIC_API_KEY` in `.env` turns on `POST /ai/chat` (one turn, Claude calls the stats/search
 functions as tools), `POST /ai/log-text` (free text → draft interaction; the app posts it) and the
-weekly digest job. Blank key = those answer 503 `ai_unavailable`. `AI_MODEL` picks the model
+weekly digest job. No key = those answer 503 `ai_unavailable`. `AI_MODEL` picks the model
 (default `claude-opus-5`); every call lands in `ai_log`, which is also the rate limiter (30 chat /
-50 log-text per user per day) and the spend meter.
+50 log-text per user per day) and the spend meter. Any Messages-API-compatible gateway works too:
+`ANTHROPIC_BASE_URL=https://tokenharbor.ai ANTHROPIC_AUTH_TOKEN=thk_live_… AI_MODEL=deepseek-v4.1-flash`
+(non-Claude models get plain requests: no effort, structured outputs or prompt caching).
 
 ```sh
 curl -H "Authorization: Bearer ann" -H 'content-type: application/json' localhost:8080/api/v1/ai/chat \

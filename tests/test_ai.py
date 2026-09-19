@@ -294,3 +294,28 @@ async def test_weekly_digest_skips_a_household_when_claude_fails(
     claude.reply("Rex said OUTSIDE 3 times.")
     r = await client.post(f"{API}/internal/weekly-digest", headers=JOB)
     assert r.json() == {"sent": 1, "skipped": 0}
+
+
+# ---- non-Claude models (gateway) ------------------------------------------------
+
+
+async def test_non_claude_model_gets_plain_requests_and_json_is_parsed_from_text(
+    client, as_user, claude, monkeypatch
+):
+    monkeypatch.setattr("app.services.ai.settings.ai_model", "deepseek-v4.1-flash")
+    rex, outside, play = await setup_household(client, as_user)
+    draft = {**DRAFT, "pusher_id": rex, "button_ids": [outside, play]}
+    claude.reply(f"```json\n{json.dumps(draft)}\n```")
+    r = await client.post(f"{API}/ai/log-text", json={"text": "Rex: outside, play"})
+    assert r.status_code == 200, r.text
+    assert r.json()["draft"]["button_ids"] == [outside, play]
+    call = claude.calls[0]
+    assert call["model"] == "deepseek-v4.1-flash"
+    assert "output_format" not in call and "output_config" not in call
+    assert "unmatched_words" in call["system"]  # the schema went into the prompt instead
+
+    claude.reply(["hi"])
+    r = await client.post(f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200 and r.json()["reply"] == "hi"
+    call = claude.calls[1]
+    assert "output_config" not in call and isinstance(call["system"], str)

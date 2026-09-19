@@ -36,7 +36,11 @@ class RateLimited(ApiError):
 @cache
 def client() -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
-        api_key=settings.anthropic_api_key.strip(), timeout=30, max_retries=1
+        api_key=settings.anthropic_api_key.strip() or None,
+        auth_token=settings.anthropic_auth_token.strip() or None,
+        base_url=settings.anthropic_base_url.strip() or None,
+        timeout=30,
+        max_retries=1,
     )
 
 
@@ -60,7 +64,7 @@ async def call(
     """Runs `request(client)` (one response, or the list of turns a tool runner produced) and
     writes one ai_log row for the successful call, in the caller's transaction. A failure is a
     503 that rolls the request back, so it is only logged. Returns the last response."""
-    if not settings.anthropic_api_key.strip():  # SSM cannot store an empty value; blank = off
+    if not settings.ai_configured:  # SSM cannot store an empty value; blank = off
         raise AiUnavailable("AI is not configured")
     started = time.perf_counter()
     try:
@@ -160,23 +164,40 @@ class LogTextDraft(BaseModel):
     unmatched_words: list[str]
 
 
+def parse_json_text(response, model: type[BaseModel]) -> BaseModel:
+    """The reply as `model`, tolerating a ```json fence around it."""
+    text = text_of(response).removeprefix("```json").removeprefix("```").removesuffix("```")
+    return model.model_validate_json(text.strip())
+
+
 async def log_text(session: AsyncSession, user: User, text: str) -> tuple[InteractionIn, list[str]]:
     vocab = await vocabulary(session, user)
-    response = await call(
-        session,
-        "log_text",
-        lambda c: c.messages.parse(
+    system = f"{LOG_TEXT_SYSTEM}{vocab.prompt(user)}\n{now_line(user)}"
+    if settings.ai_is_claude:
+        request = lambda c: c.messages.parse(  # noqa: E731
             model=settings.ai_model,
             max_tokens=2048,
-            system=f"{LOG_TEXT_SYSTEM}{vocab.prompt(user)}\n{now_line(user)}",
+            system=system,
             messages=[{"role": "user", "content": text}],
             output_format=LogTextDraft,
             output_config={"effort": "low"},
-        ),
-        household_id=user.household_id,
-        user_id=user.id,
+        )
+    else:
+        schema = json.dumps(LogTextDraft.model_json_schema()["properties"])
+        request = lambda c: c.messages.create(  # noqa: E731
+            model=settings.ai_model,
+            max_tokens=2048,
+            system=f"{system}\nReply with one JSON object and nothing else, fields: {schema}",
+            messages=[{"role": "user", "content": text}],
+        )
+    response = await call(
+        session, "log_text", request, household_id=user.household_id, user_id=user.id
     )
-    d: LogTextDraft = response.parsed_output
+    d: LogTextDraft = (
+        response.parsed_output if settings.ai_is_claude else parse_json_text(response, LogTextDraft)
+    )
+    if d is None:  # Claude answered without a parsable object (refusal or cut off)
+        raise AiUnavailable("AI gave no usable answer, try again")
     try:
         occurred_at = datetime.fromisoformat(d.occurred_at or "")
     except ValueError:
@@ -308,24 +329,26 @@ def chat_tools(session: AsyncSession, user: User):
 
 async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
     vocab = await vocabulary(session, user)
-    system = [
-        {
-            "type": "text",
-            "text": CHAT_SYSTEM + vocab.prompt(user),
-            "cache_control": {"type": "ephemeral"},
-        },
-        {"type": "text", "text": now_line(user)},
-    ]
+    stable, clock = CHAT_SYSTEM + vocab.prompt(user), now_line(user)
+    if settings.ai_is_claude:  # the stable block is cached across turns; the clock is not
+        extra = {
+            "system": [
+                {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": clock},
+            ],
+            "output_config": {"effort": "low"},
+        }
+    else:
+        extra = {"system": f"{stable}\n{clock}"}
 
     async def run(c):
         runner = c.beta.messages.tool_runner(
             model=settings.ai_model,
             max_tokens=2048,
-            system=system,
             tools=chat_tools(session, user),
             messages=messages,
             max_iterations=CHAT_MAX_TOOL_ROUNDS + 1,
-            output_config={"effort": "low"},
+            **extra,
         )
         return [m async for m in runner]
 
@@ -351,7 +374,7 @@ async def digest(session: AsyncSession, user: User, learners_stats: list[dict]) 
             max_tokens=1024,
             system=DIGEST_SYSTEM,
             messages=[{"role": "user", "content": json.dumps(learners_stats)}],
-            output_config={"effort": "medium"},
+            **({"output_config": {"effort": "medium"}} if settings.ai_is_claude else {}),
         ),
         household_id=user.household_id,
     )

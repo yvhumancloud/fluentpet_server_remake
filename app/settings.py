@@ -18,8 +18,22 @@ class Settings(BaseSettings):
     device_api_key: str = ""
     job_api_key: str = ""  # X-Job-Key for /internal/* (triggered by hand)
     sentry_dsn: str = ""
-    anthropic_api_key: str = ""  # blank = every /ai/* endpoint answers 503 ai_unavailable
+    # AI (PRD §12). No key and no token = every /ai/* endpoint answers 503 ai_unavailable.
+    anthropic_api_key: str = ""  # x-api-key (Anthropic)
+    anthropic_auth_token: str = ""  # Authorization: Bearer (gateways such as Token Harbor)
+    anthropic_base_url: str = ""  # blank = api.anthropic.com; any Messages-API-compatible host
     ai_model: str = "claude-opus-5"
+
+    @property
+    def ai_configured(self) -> bool:
+        return bool(self.anthropic_api_key.strip() or self.anthropic_auth_token.strip())
+
+    @property
+    def ai_is_claude(self) -> bool:
+        """Claude-only request extras (effort, structured outputs, cache_control) are sent
+        only to Claude models; other models behind a gateway get plain Messages requests."""
+        return self.ai_model.startswith("claude")
+
     # "token:email[:name],..." — bearer tokens that stand in for Firebase in dev/e2e. Never prod.
     dev_tokens: str = ""
 

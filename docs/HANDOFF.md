@@ -121,6 +121,10 @@ functions when a reply names them).
   failure skips the household; it is retried next run.
 * `ai_log` (one row per successful call, in the request transaction) is the rate limiter and the
   spend meter: `select model, sum(input_tokens), sum(output_tokens) from ai_log group by 1`.
+* Provider is a setting: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` point the same SDK at a
+  Messages-compatible gateway (Token Harbor: `deepseek-v4.1-flash` is on their free tier).
+  `settings.ai_is_claude` gates the Claude-only extras (effort, `messages.parse` schema,
+  cache_control); other models get the schema in the prompt and the JSON parsed from text.
 * Not done on purpose: MCP, RAG, streaming, stored chat threads (PRD §12.10).
 * Ceiling: an AI request holds its pooled connection (of 5) for the model call, ~5–10 s. Fine at
   launch; if it bites, tools open their own `SessionLocal()` (PRD §12.8).
