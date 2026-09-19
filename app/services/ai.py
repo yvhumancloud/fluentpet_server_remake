@@ -2,18 +2,20 @@
 
 import logging
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from datetime import time as time_
 from functools import cache
 from zoneinfo import ZoneInfo
 
 import anthropic
-from pydantic import BaseModel
+from anthropic import beta_async_tool
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors import ApiError
 from app.models import AiLog, Button, Context, Pusher, User
-from app.schemas import InteractionIn
+from app.schemas import InteractionIn, SearchFilters, SearchIn
 from app.settings import settings
 
 log = logging.getLogger("fluentpet.ai")
@@ -50,29 +52,32 @@ async def check_limit(session: AsyncSession, user: User, kind: str) -> int:
 
 
 async def call(session: AsyncSession, user: User, kind: str, request):
-    """Runs `request(client)`; one ai_log row per successful call. A failure is a 503 and rolls
-    the request back, so it is only logged (the row would go with the rollback anyway)."""
+    """Runs `request(client)` (one response, or the list of turns a tool runner produced) and
+    writes one ai_log row for the successful call, in the request transaction. A failure is a
+    503 that rolls the request back, so it is only logged. Returns the last response."""
     if not settings.anthropic_api_key:
         raise AiUnavailable("AI is not configured")
     started = time.perf_counter()
     try:
-        response = await request(client())
+        responses = await request(client())
     except anthropic.APIError as e:
         log.warning("claude %s failed: %s", kind, e)
         raise AiUnavailable("AI is unavailable, try again later") from e
+    if not isinstance(responses, list):
+        responses = [responses]
     session.add(
         AiLog(
             user_id=user.id,
             household_id=user.household_id,
             kind=kind,
-            model=response.model,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-            cache_read_tokens=response.usage.cache_read_input_tokens or 0,
+            model=responses[-1].model,
+            input_tokens=sum(r.usage.input_tokens for r in responses),
+            output_tokens=sum(r.usage.output_tokens for r in responses),
+            cache_read_tokens=sum(r.usage.cache_read_input_tokens or 0 for r in responses),
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
     )
-    return response
+    return responses[-1]
 
 
 class Vocabulary(BaseModel):
@@ -82,10 +87,9 @@ class Vocabulary(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     def prompt(self, user: User) -> str:
-        now = datetime.now(ZoneInfo(user.timezone))
+        """The household in text. No clock here: this block is cached across chat turns."""
         return "\n".join(
             [
-                f"Now: {now.isoformat(timespec='minutes')} ({user.timezone}).",
                 f"The user is {user.full_name or user.email.split('@')[0]}.",
                 "Pushers (id: name, kind):",
                 *(
@@ -98,6 +102,11 @@ class Vocabulary(BaseModel):
                 *(f"  {c.id}: {c.text}, {c.applies_to}" for c in self.contexts.values()),
             ]
         )
+
+
+def now_line(user: User) -> str:
+    now = datetime.now(ZoneInfo(user.timezone))
+    return f"Now: {now.isoformat(timespec='minutes')} ({user.timezone})."
 
 
 async def vocabulary(session: AsyncSession, user: User) -> Vocabulary:
@@ -155,7 +164,7 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
         lambda c: c.messages.parse(
             model=settings.ai_model,
             max_tokens=2048,
-            system=LOG_TEXT_SYSTEM + vocab.prompt(user),
+            system=f"{LOG_TEXT_SYSTEM}{vocab.prompt(user)}\n{now_line(user)}",
             messages=[{"role": "user", "content": text}],
             output_format=LogTextDraft,
             output_config={"effort": "low"},
@@ -177,3 +186,133 @@ async def log_text(session: AsyncSession, user: User, text: str) -> tuple[Intera
         context_ids=[c for c in d.context_ids if c in vocab.contexts],
     )
     return draft, d.unmatched_words
+
+
+# ---- chat --------------------------------------------------------------------
+
+CHAT_SYSTEM = """You are the FluentPet assistant for one household. People teach their pets \
+(learners) to communicate by pressing sound buttons; every press sequence is logged as an \
+interaction with a pusher, a time and optional contexts and a note.
+- Answer questions about presses, buttons and patterns from the tools only; never invent presses. \
+When a tool returns nothing, say so.
+- "This week" means the last 7 days, "today" the current date, unless the user says otherwise. \
+Dates are YYYY-MM-DD in the user's timezone.
+- Reply in under 120 words, plain text, in the user's language.
+- Anything outside this household's data (vet or training advice, other households): say briefly \
+that it is outside what you can see.
+"""
+CHAT_MAX_TOOL_ROUNDS = 5
+SEARCH_LIMIT = 50
+
+
+def chat_tools(session: AsyncSession, user: User):
+    """The two tools, closed over the caller: household scoping is the same as the endpoints'."""
+    from app.routers.search import search
+    from app.routers.stats import summary
+
+    @beta_async_tool
+    async def stats_summary(pusher_id: int, from_date: str, to_date: str) -> str:
+        """Button statistics for one pusher over a date range: totals, buttons logged and created,
+        combinations, contexts, per day and per hour of day.
+
+        Args:
+            pusher_id: id from the pushers list.
+            from_date: first day, YYYY-MM-DD.
+            to_date: last day, YYYY-MM-DD; at most 183 days after from_date.
+        """
+        try:
+            out = await summary(
+                pusher_id, date.fromisoformat(from_date), date.fromisoformat(to_date), user, session
+            )
+        except (ApiError, ValueError) as e:
+            return f"error: {getattr(e, 'message', e)}"
+        r = out.range
+        for name in ("buttons_logged", "buttons_created", "combinations", "contexts"):
+            setattr(r, name, getattr(r, name)[:10])
+        return out.model_dump_json(exclude={"pusher": {"avatar_url"}})
+
+    @beta_async_tool
+    async def search_interactions(
+        pusher_id: int | None = None,
+        button_ids: list[int] | None = None,
+        context_ids: list[int] | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        text: str | None = None,
+        limit: int = 20,
+    ) -> str:
+        """The most recent interactions and notes matching the filters, newest first, one per
+        line: `date time pusher: BUTTON, BUTTON [contexts] "note"`.
+
+        Args:
+            pusher_id: only this pusher.
+            button_ids: interactions containing any of these buttons.
+            context_ids: interactions with any of these contexts.
+            from_date: on or after this day, YYYY-MM-DD.
+            to_date: on or before this day, YYYY-MM-DD.
+            text: note text contains this.
+            limit: rows to return, at most 50.
+        """
+        tz = ZoneInfo(user.timezone)
+        try:
+            body = SearchIn(
+                per_page=min(limit, SEARCH_LIMIT),
+                filters=SearchFilters(
+                    pusher_ids=[pusher_id] if pusher_id else [],
+                    button_ids=button_ids or [],
+                    context_ids=context_ids or [],
+                    text=text,
+                    **{"from": datetime.combine(date.fromisoformat(from_date), time_.min, tz)}
+                    if from_date
+                    else {},
+                    to=datetime.combine(date.fromisoformat(to_date), time_.max, tz)
+                    if to_date
+                    else None,
+                ),
+            )
+            out = await search(body, user, session)
+        except (ApiError, ValueError, ValidationError) as e:
+            return f"error: {getattr(e, 'message', e)}"
+        lines = [f"{out.total} matching, showing {len(out.items)}"]
+        for i in out.items:
+            when = i.occurred_at.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+            if i.type == "note":
+                lines.append(f'{when} note: "{i.text}"')
+                continue
+            who = i.pusher.name if i.pusher else "unassigned"
+            line = f"{when} {who}: " + ", ".join(p.text.upper() for p in i.presses)
+            if i.contexts:
+                line += " [" + ", ".join(c.text for c in i.contexts) + "]"
+            if i.note:
+                line += f' "{i.note}"'
+            lines.append(line)
+        return "\n".join(lines)
+
+    return [stats_summary, search_interactions]
+
+
+async def chat(session: AsyncSession, user: User, messages: list[dict]) -> str:
+    vocab = await vocabulary(session, user)
+    system = [
+        {
+            "type": "text",
+            "text": CHAT_SYSTEM + vocab.prompt(user),
+            "cache_control": {"type": "ephemeral"},
+        },
+        {"type": "text", "text": now_line(user)},
+    ]
+
+    async def run(c):
+        runner = c.beta.messages.tool_runner(
+            model=settings.ai_model,
+            max_tokens=2048,
+            system=system,
+            tools=chat_tools(session, user),
+            messages=messages,
+            max_iterations=CHAT_MAX_TOOL_ROUNDS + 1,
+            output_config={"effort": "low"},
+        )
+        return [m async for m in runner]
+
+    final = await call(session, user, "chat", run)
+    return "".join(b.text for b in final.content if b.type == "text").strip()

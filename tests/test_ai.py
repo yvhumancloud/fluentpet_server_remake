@@ -1,3 +1,6 @@
+import json
+from datetime import UTC, datetime, timedelta
+
 API = "/api/v1"
 
 
@@ -119,3 +122,117 @@ async def test_log_text_is_503_when_claude_fails_or_is_not_configured(
     r = await client.post(f"{API}/ai/log-text", json={"text": "x"})
     assert r.status_code == 503 and r.json()["error"]["code"] == "ai_unavailable"
     assert len(claude.calls) == 1  # never called without a key
+
+
+# ---- chat --------------------------------------------------------------------
+
+
+def day(days_ago: int, hour: int) -> str:
+    d = datetime.now(UTC).date() - timedelta(days=days_ago)
+    return f"{d.isoformat()}T{hour:02d}:00:00Z"
+
+
+async def log(client, pusher_id, button_ids, occurred_at):
+    body = {"pusher_id": pusher_id, "button_ids": button_ids, "occurred_at": occurred_at}
+    assert (await client.post(f"{API}/interactions", json=body)).status_code == 201
+
+
+async def test_chat_answers_from_the_stats_tool(client, as_user, claude):
+    rex, outside, play = await setup_household(client, as_user)
+    await log(client, rex, [outside], day(1, 8))
+    await log(client, rex, [outside], day(0, 7))
+    await log(client, rex, [play], day(0, 9))
+    today = datetime.now(UTC).date()
+    claude.reply(
+        [
+            (
+                "stats_summary",
+                {
+                    "pusher_id": rex,
+                    "from_date": (today - timedelta(days=7)).isoformat(),
+                    "to_date": today.isoformat(),
+                },
+            ),
+            "Rex said Outside twice this week.",
+        ]
+    )
+
+    r = await client.post(
+        f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "what did Rex say?"}]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"reply": "Rex said Outside twice this week.", "remaining_today": 29}
+
+    stats = json.loads(claude.tool_results[0])
+    assert stats["range"]["buttons_logged"][0] == {"text": "Outside", "count": 2}
+    call = claude.calls[0]
+    assert {t.name for t in call["tools"]} == {"stats_summary", "search_interactions"}
+    assert call["messages"] == [{"role": "user", "content": "what did Rex say?"}]
+    assert "Rex" in str(call["system"]) and "Outside" in str(call["system"])
+
+
+async def test_chat_search_tool_lists_interactions_in_the_users_timezone(client, as_user, claude):
+    rex, outside, play = await setup_household(client, as_user)  # Europe/Paris
+    await log(client, rex, [outside, play], "2026-09-10T06:05:00Z")
+    r = await client.post(
+        f"{API}/notes", json={"text": "Vet visit", "occurred_at": "2026-09-11T10:00:00Z"}
+    )
+    assert r.status_code == 201
+    claude.reply(
+        [
+            ("search_interactions", {"pusher_id": rex, "from_date": "2026-09-10"}),
+            ("search_interactions", {"from_date": "2026-09-01", "to_date": "2026-09-12"}),
+            "done",
+        ]
+    )
+    r = await client.post(
+        f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "recent?"}]}
+    )
+    assert r.status_code == 200
+    assert claude.tool_results[0] == "1 matching, showing 1\n2026-09-10 08:05 Rex: OUTSIDE, PLAY"
+    assert claude.tool_results[1].splitlines() == [
+        "2 matching, showing 2",
+        '2026-09-11 12:00 note: "Vet visit"',
+        "2026-09-10 08:05 Rex: OUTSIDE, PLAY",
+    ]
+
+
+async def test_chat_tools_cannot_see_other_households(client, as_user, claude):
+    as_user("dan", "dan@example.com", name="Dan")
+    fido = (await client.post(f"{API}/pushers", json={"name": "Fido", "is_human": False})).json()
+    treat = (await client.post(f"{API}/buttons", json={"text": "Treat"})).json()
+    await log(client, fido["id"], [treat["id"]], day(0, 8))
+    await setup_household(client, as_user)
+    claude.reply(
+        [
+            (
+                "stats_summary",
+                {"pusher_id": fido["id"], "from_date": "2026-09-01", "to_date": "2026-09-30"},
+            ),
+            ("search_interactions", {"button_ids": [treat["id"]]}),
+            ("search_interactions", {"pusher_id": fido["id"]}),
+            "nothing",
+        ]
+    )
+    r = await client.post(f"{API}/ai/chat", json={"messages": [{"role": "user", "content": "?"}]})
+    assert r.status_code == 200
+    assert claude.tool_results[0] == "error: pusher not found"
+    assert claude.tool_results[1] == "0 matching, showing 0"
+    assert claude.tool_results[2] == "0 matching, showing 0"
+
+
+async def test_chat_validates_the_thread_and_limits_30_a_day(client, as_user, claude):
+    await setup_household(client, as_user)
+    bad = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
+    r = await client.post(f"{API}/ai/chat", json={"messages": bad})
+    assert r.status_code == 422 and "last message" in r.json()["error"]["message"]
+    r = await client.post(f"{API}/ai/chat", json={"messages": bad[:1] * 21})
+    assert r.status_code == 422
+    assert claude.calls == []
+
+    for n in range(30):
+        claude.reply(["ok"])
+        r = await client.post(f"{API}/ai/chat", json={"messages": bad[:1]})
+        assert r.status_code == 200 and r.json()["remaining_today"] == 29 - n
+    r = await client.post(f"{API}/ai/chat", json={"messages": bad[:1]})
+    assert r.status_code == 429 and r.json()["error"]["code"] == "rate_limited"

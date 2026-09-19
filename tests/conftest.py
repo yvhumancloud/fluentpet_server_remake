@@ -129,15 +129,18 @@ def webhooks(monkeypatch):
 class FakeClaude:
     """Stands in for AsyncAnthropic. Queue model output with `.reply(...)`; calls are recorded.
 
-    A reply is the structured object for `messages.parse`, or the text for `messages.create`.
+    A reply is the structured object for `messages.parse`, the text for `messages.create`, or for
+    `beta.messages.tool_runner` a list of steps: `("tool_name", {args})` tuples the fake runs
+    against the real tool functions (results land in `tool_results`), then the final text.
     `error` makes the next call raise it (any anthropic.APIError subclass).
     """
 
     def __init__(self):
         self.calls: list[dict] = []
         self.replies: list = []
+        self.tool_results: list[str] = []
         self.error: Exception | None = None
-        self.messages = self  # client.messages.parse / client.messages.create
+        self.messages = self.beta = self  # client.messages.* / client.beta.messages.tool_runner
 
     def reply(self, value):
         self.replies.append(value)
@@ -165,6 +168,32 @@ class FakeClaude:
             model=kw["model"],
             stop_reason="end_turn",
         )
+
+    def tool_runner(self, **kw):
+        steps = self._take(kw)
+        tools = {t.name: t for t in kw["tools"]}
+
+        async def run():
+            for step in steps:
+                if isinstance(step, tuple):
+                    name, args = step
+                    self.tool_results.append(await tools[name].call(args))
+                    block = SimpleNamespace(type="tool_use", name=name, input=args)
+                    yield SimpleNamespace(
+                        content=[block],
+                        usage=self._usage(),
+                        model=kw["model"],
+                        stop_reason="tool_use",
+                    )
+                else:
+                    yield SimpleNamespace(
+                        content=[SimpleNamespace(type="text", text=step)],
+                        usage=self._usage(),
+                        model=kw["model"],
+                        stop_reason="end_turn",
+                    )
+
+        return run()
 
 
 @pytest.fixture(autouse=True)

@@ -650,3 +650,23 @@ class LogTextIn(BaseModel):
 class LogTextOut(BaseModel):
     draft: InteractionIn
     unmatched_words: list[str]
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: Annotated[str, Field(min_length=1, max_length=2000)]
+
+
+class ChatIn(BaseModel):
+    messages: Annotated[list[ChatMessage], Field(min_length=1, max_length=20)]
+
+    @model_validator(mode="after")
+    def _ends_with_user(self):
+        if self.messages[-1].role != "user":
+            raise ValueError("last message must be from the user")
+        return self
+
+
+class ChatOut(BaseModel):
+    reply: str
+    remaining_today: int
